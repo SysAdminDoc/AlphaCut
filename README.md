@@ -1,8 +1,8 @@
 # AlphaCut v1.0.0
 
-**AI-powered video background removal & compositing. Turnkey. Free. Open-source.**
+**Video background removal & compositing.**
 
-AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing, and a full CLI — all in a single Python file.
+AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
 
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
