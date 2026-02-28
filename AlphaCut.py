@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.0.0 — AI Video Background Removal
+AlphaCut v1.0.1 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
 External: FFmpeg (must be on PATH)
 
-MIT License — Copyright (c) 2025 SysAdminDoc
+MIT License — Copyright (c) 2025-2026 SysAdminDoc
 https://github.com/SysAdminDoc/AlphaCut
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse
 import threading, queue
-from concurrent.futures import ThreadPoolExecutor
 import urllib.request, urllib.error
 from collections import deque
 
@@ -134,9 +133,9 @@ from PyQt6.QtWidgets import (
     QTextEdit, QSpinBox, QSlider, QCheckBox, QGraphicsOpacityEffect,
     QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox,
-    QMenuBar, QScrollArea
+    QScrollArea
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent
 from PyQt6.QtGui import (
     QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent, QPalette,
     QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices
@@ -293,8 +292,7 @@ def reveal_in_explorer(path):
     """Open the containing folder and select the file."""
     try:
         if sys.platform == 'win32':
-            target = path if os.path.isdir(path) else path
-            subprocess.Popen(['explorer', '/select,', os.path.normpath(target)])
+            subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
         elif sys.platform == 'darwin':
             subprocess.Popen(['open', '-R', path])
         else:
@@ -313,7 +311,7 @@ QMainWindow { background-color: #0d0f14; }
 QWidget { background-color: transparent; color: #c8ccd4; }
 QGroupBox {
     background-color: #13161d; border: 1px solid #1e2230; border-radius: 12px;
-    margin-top: 1.2em; padding: 16px 12px 12px 12px;
+    margin-top: 1.4em; padding: 20px 12px 12px 12px;
     font-weight: 600; font-size: 11px; color: #6e7a94;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 8px; color: #555d73; letter-spacing: 1px; }
@@ -330,7 +328,7 @@ QPushButton#danger { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #dc
 QPushButton#small { padding: 6px 14px; font-size: 11px; border-radius: 6px; }
 QComboBox {
     background-color: #13161d; color: #c8ccd4; border: 1px solid #1e2230;
-    border-radius: 8px; padding: 8px 12px; font-size: 12px; min-height: 20px;
+    border-radius: 8px; padding: 8px 12px; font-size: 12px; min-height: 22px;
 }
 QComboBox::drop-down { border: none; width: 30px; }
 QComboBox::down-arrow { image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #6e7a94; margin-right: 10px; }
@@ -433,11 +431,13 @@ class AlphaCutEngine:
             arr = np.where(binary, np.maximum(arr, 0.5), np.minimum(arr, 0.5))
         if edge_softness > 0: arr = gaussian_filter(arr, sigma=edge_softness * 0.3)
         if temporal_smooth > 0 and len(self._mask_buffer) > 0:
-            frames = list(self._mask_buffer)[-temporal_smooth:]
-            wh = 0.4 / max(len(frames), 1); blended = arr * 0.6
-            for prev in frames:
-                blended += (prev if prev.shape == arr.shape else arr) * wh
-            arr = np.clip(blended, 0, 1)
+            frames = [f for f in list(self._mask_buffer)[-temporal_smooth:]
+                       if f.shape == arr.shape]
+            if frames:
+                wh = 0.4 / max(len(frames), 1); blended = arr * 0.6
+                for prev in frames:
+                    blended += prev * wh
+                arr = np.clip(blended, 0, 1)
         self._mask_buffer.append(arr.copy())
         return Image.fromarray((np.clip(arr, 0, 1) * 255).astype(np.uint8), 'L')
 
@@ -509,12 +509,14 @@ class AlphaCutEngine:
     def composite_on_background(fg_rgba, bg_color=None, bg_image=None):
         """Composite RGBA foreground onto a background.
         bg_color: (R,G,B) tuple or None for transparent
-        bg_image: PIL Image or None"""
+        bg_image: PIL Image (pre-resized recommended) or None"""
         if bg_color is None and bg_image is None:
             return fg_rgba  # Keep transparent
         w, h = fg_rgba.size
         if bg_image is not None:
-            bg = bg_image.convert('RGB').resize((w, h), Image.Resampling.LANCZOS)
+            bg = bg_image.convert('RGB')
+            if bg.size != (w, h):
+                bg = bg.resize((w, h), Image.Resampling.LANCZOS)
         elif bg_color is not None:
             bg = Image.new('RGB', (w, h), bg_color)
         else:
@@ -530,7 +532,7 @@ class AlphaCutEngine:
         url = self.config['url']
         self.log(f"Downloading: {self.config['file']}...")
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'AlphaCut/0.7'})
+            req = urllib.request.Request(url, headers={'User-Agent': f'AlphaCut/{__version__}'})
             with urllib.request.urlopen(req, timeout=300) as resp:
                 total = int(resp.headers.get('Content-Length', 0))
                 downloaded = 0; tmp_path = path + '.tmp'; last_pct = -10
@@ -552,12 +554,14 @@ class AlphaCutEngine:
 
 
 _engine_cache = {'key': None, 'engine': None}
+_engine_lock = threading.Lock()
 
 def get_engine(model_key, log_fn=None):
-    if _engine_cache['key'] == model_key and _engine_cache['engine'] is not None:
-        eng = _engine_cache['engine']; eng.log = log_fn or print; return eng
-    eng = AlphaCutEngine(model_key, log_fn=log_fn); eng.load()
-    _engine_cache['key'] = model_key; _engine_cache['engine'] = eng; return eng
+    with _engine_lock:
+        if _engine_cache['key'] == model_key and _engine_cache['engine'] is not None:
+            eng = _engine_cache['engine']; eng.log = log_fn or print; return eng
+        eng = AlphaCutEngine(model_key, log_fn=log_fn); eng.load()
+        _engine_cache['key'] = model_key; _engine_cache['engine'] = eng; return eng
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -683,17 +687,18 @@ def suggest_resolution(video_info, model_key):
         return 0, f"Video is {w}x{h}, model input is {model_size}px — no downscale needed"
 
     # Suggested tiers based on model input size
-    # For 320px models: 1080p is sweet spot; 4K wastes memory with no quality gain
-    # For 1024px models: can handle up to 2K well; 4K still benefits from downscale
+    # For 320px models: 1080p is the sweet spot; higher res wastes memory with no quality gain
+    # For 1024px models: 1440p is the sweet spot; can benefit from more detail
     if model_size <= 320:
-        tiers = [720, 1080, 1440]
+        sweet_spot = 1080
     else:
-        tiers = [1080, 1440, 2160]
+        sweet_spot = 1440
 
-    suggested = 0
-    for t in tiers:
-        if max(w, h) > t:
-            suggested = t
+    # Only suggest downscale if video exceeds the sweet spot
+    if max(w, h) <= sweet_spot:
+        suggested = 0
+    else:
+        suggested = sweet_spot
 
     if suggested == 0:
         return 0, f"Resolution OK for {model_size}px model"
@@ -735,7 +740,6 @@ class ProcessingWorker(QThread):
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
         self.resume_from = resume_from  # skip frames already processed
         self._cancelled = False
-        self._last_completed_frame = 0  # track progress for resume
 
     def cancel(self): self._cancelled = True
 
@@ -775,6 +779,12 @@ class ProcessingWorker(QThread):
         tmp_dir = tempfile.mkdtemp(prefix='alphacut_')
         frames_in = os.path.join(tmp_dir, 'in'); frames_out = os.path.join(tmp_dir, 'out')
         os.makedirs(frames_in); os.makedirs(frames_out)
+        # Resume support: use deterministic output dir based on input hash
+        # so processed frames survive crashes
+        progress_hash = f"{hash(self.input_path) & 0xFFFFFFFF:08x}"
+        progress_file = os.path.join(APP_DIR, f"resume_{progress_hash}.json")
+        persist_out = os.path.join(APP_DIR, f"wip_{progress_hash}")
+        resume_frame = self.resume_from
         try:
             self.status.emit("Extracting frames...")
             cmd = [ffmpeg, '-i', self.input_path, '-fps_mode', 'cfr']
@@ -789,22 +799,29 @@ class ProcessingWorker(QThread):
             if total == 0: self.error.emit("No frames extracted."); return
             self.log.emit(f"Extracted {total} frames")
 
-            # Resume detection: check for existing output frames
-            resume_frame = self.resume_from
-            progress_hash = f"{hash(self.input_path) & 0xFFFFFFFF:08x}"
-            progress_file = os.path.join(APP_DIR, f"resume_{progress_hash}.json")
-            if resume_frame <= 0 and os.path.isfile(progress_file):
-                try:
-                    with open(progress_file) as pf:
-                        pd = json.load(pf)
-                    if (pd.get('input') == self.input_path and
-                        pd.get('output') == self.output_path and
-                        pd.get('total') == total):
-                        resume_frame = pd.get('last_frame', 0)
-                        if resume_frame > 0:
-                            self.log.emit(f"Resuming from frame {resume_frame}/{total}")
-                except Exception:
-                    pass
+            # Resume detection: check persistent output directory for existing frames
+            os.makedirs(persist_out, exist_ok=True)
+            if resume_frame <= 0:
+                existing_out = sorted(glob.glob(os.path.join(persist_out, 'frame_*.png')))
+                if existing_out and os.path.isfile(progress_file):
+                    try:
+                        with open(progress_file) as pf:
+                            pd = json.load(pf)
+                        if (pd.get('input') == self.input_path and
+                            pd.get('output') == self.output_path and
+                            pd.get('total') == total):
+                            resume_frame = len(existing_out)
+                            if resume_frame > 0:
+                                self.log.emit(f"Resuming from frame {resume_frame}/{total} ({len(existing_out)} cached)")
+                    except Exception:
+                        pass
+                if resume_frame <= 0 and existing_out:
+                    # Stale WIP dir from different config — clean it
+                    for f in existing_out:
+                        try: os.remove(f)
+                        except Exception: pass
+            # Use persistent dir for output frames instead of temp
+            frames_out = persist_out
 
             self.status.emit("Loading AI model...")
             engine = get_engine(self.model_key, log_fn=self.log.emit)
@@ -830,7 +847,7 @@ class ProcessingWorker(QThread):
                 self.log.emit(f"Spill suppression: {self.spill_strength}% ({self.spill_color})")
             if self.shadow_strength > 0:
                 self.log.emit(f"Shadow preservation: {self.shadow_strength}%")
-            if self.bg_color:
+            if self.bg_color is not None:
                 self.log.emit(f"Background color: {self.bg_color}")
 
             # ── PIPELINED PROCESSING ──
@@ -839,7 +856,6 @@ class ProcessingWorker(QThread):
             read_q = queue.Queue(maxsize=8)    # pre-decoded PIL images
             save_q = queue.Queue(maxsize=8)    # (index, PIL result) to save
             read_done = threading.Event()
-            save_done = threading.Event()
             save_errors = []
 
             def _reader_thread():
@@ -857,10 +873,11 @@ class ProcessingWorker(QThread):
                 read_done.set()
 
             def _saver_thread():
-                """Writes processed frames to disk in parallel with inference."""
+                """Writes processed frames to disk in parallel with inference.
+                Only exits when it receives the None sentinel from the main loop."""
                 while True:
                     try:
-                        item = save_q.get(timeout=1)
+                        item = save_q.get(timeout=5)
                         if item is None: break
                         idx, result = item
                         try:
@@ -869,9 +886,8 @@ class ProcessingWorker(QThread):
                             save_errors.append(f"Save error frame {idx}: {e}")
                         save_q.task_done()
                     except queue.Empty:
-                        if read_done.is_set() and save_q.empty():
+                        if self._cancelled:
                             break
-                save_done.set()
 
             # Start pipeline threads
             reader = threading.Thread(target=_reader_thread, daemon=True)
@@ -882,11 +898,13 @@ class ProcessingWorker(QThread):
             self.status.emit("Removing backgrounds...")
             t0 = time.time(); preview_every = max(1, total // 30)
             last_mask_img = None  # L-mode PIL mask for frame skip
+            last_result = None   # last fully composited result for null-frame fallback
             last_inferred_idx = -1
-            has_compositing = (self.invert_mask or self.spill_strength > 0 or
-                               self.shadow_strength > 0 or self.bg_color is not None or
-                               bg_image is not None)
             os.makedirs(APP_DIR, exist_ok=True)
+
+            # Pre-resize background image to frame dimensions once
+            if bg_image is not None:
+                bg_image = bg_image.convert('RGB').resize((sw, sh), Image.Resampling.LANCZOS)
 
             for frame_num in range(total):
                 if self._cancelled: self.log.emit("Cancelled"); break
@@ -897,8 +915,8 @@ class ProcessingWorker(QThread):
                     self.log.emit(f"Timeout reading frame {frame_num}"); break
 
                 if img is None:
-                    if last_mask_img is not None:
-                        save_q.put((idx, last_mask_img.copy()))
+                    if last_result is not None:
+                        save_q.put((idx, last_result.copy()))
                     continue
 
                 # Resume: skip already-processed frames
@@ -956,6 +974,7 @@ class ProcessingWorker(QThread):
                             result, bg_color=self.bg_color, bg_image=bg_image)
 
                 save_q.put((idx, result))
+                last_result = result
 
                 pct = int(((frame_num + 1) / total) * 100)
                 self.progress.emit(pct); self.frame_info.emit(frame_num + 1, total)
@@ -992,7 +1011,7 @@ class ProcessingWorker(QThread):
 
             if self._cancelled: return
 
-            # Clean up resume file on successful completion
+            # Clean up resume progress file on successful completion
             try:
                 if os.path.isfile(progress_file): os.remove(progress_file)
             except Exception: pass
@@ -1002,6 +1021,12 @@ class ProcessingWorker(QThread):
             self.log.emit(f"Processed {total} frames ({inferred} inferred) in {_ftime(et)} ({total/max(et,0.1):.1f} fps)")
             self.status.emit("Encoding output...")
             out = self._encode(ffmpeg, frames_out, fps, info)
+
+            # Clean up persistent WIP directory after encoding
+            try:
+                if os.path.isdir(persist_out): shutil.rmtree(persist_out, ignore_errors=True)
+            except Exception: pass
+
             if out and (os.path.isfile(out) or os.path.isdir(out)):
                 if os.path.isfile(out): self.log.emit(f"Output: {out} ({os.path.getsize(out)/(1024*1024):.1f} MB)")
                 else: self.log.emit(f"Output: {out}")
@@ -1037,7 +1062,7 @@ class ProcessingWorker(QThread):
         else: self.error.emit(f"Unknown format: {fmt}"); return None
         if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
-                    '-c:a', 'aac' if fmt in ('greenscreen', 'webm') else 'copy', '-shortest']
+                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt == 'greenscreen' else 'copy'), '-shortest']
         cmd.append(out_file)
         self.log.emit(f"Encoding: {fmt}...")
         proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=_SUBPROCESS_FLAGS)
@@ -1090,12 +1115,13 @@ class BatchWorker(QThread):
             worker.status.connect(lambda s, idx=i: self.job_status.emit(idx, s))
             worker.log.connect(self.log.emit)
             worker.preview.connect(self.preview.emit)
+            # Sync cancel state: when batch is cancelled, propagate to worker via progress updates
+            worker.progress.connect(lambda pct, w=worker: setattr(w, '_cancelled', True) if self._cancelled else None)
 
             # Run synchronously (we're already on a thread)
-            worker._cancelled = self._cancelled
             try:
                 worker._process()
-                if worker._cancelled:
+                if self._cancelled:
                     self.job_error.emit(i, "Cancelled")
                 else:
                     # Check if output exists
@@ -1122,11 +1148,16 @@ class PreviewFrameWorker(QThread):
     status = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0, seek_pct=0.1):
+    def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0, seek_pct=0.1,
+                 invert_mask=False, spill_strength=0, spill_color='green',
+                 shadow_strength=0, bg_color=None, bg_image_path=None):
         super().__init__()
         self.input_path = input_path; self.model_key = model_key
         self.max_res = max_res; self.edge_softness = edge_softness
         self.mask_shift = mask_shift; self.seek_pct = seek_pct
+        self.invert_mask = invert_mask; self.spill_strength = spill_strength
+        self.spill_color = spill_color; self.shadow_strength = shadow_strength
+        self.bg_color = bg_color; self.bg_image_path = bg_image_path
 
     def run(self):
         tmp = None
@@ -1148,7 +1179,29 @@ class PreviewFrameWorker(QThread):
             self.status.emit("Running AI model...")
             img = Image.open(tmp)
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m))
-            result = engine.remove_background(img, edge_softness=self.edge_softness, mask_shift=self.mask_shift)
+
+            # Full compositing pipeline (mirrors ProcessingWorker)
+            mask = engine.predict_mask(img)
+            if self.edge_softness > 0 or self.mask_shift != 0:
+                mask = engine.refine_mask(mask, self.edge_softness, self.mask_shift, 0)
+            current_mask = mask.copy()
+            if self.shadow_strength > 0:
+                current_mask = AlphaCutEngine.preserve_shadows(img, current_mask, self.shadow_strength)
+            if self.invert_mask:
+                current_mask = AlphaCutEngine.invert_mask(current_mask)
+            src = img
+            if self.spill_strength > 0:
+                src = AlphaCutEngine.suppress_spill(src, current_mask, self.spill_strength, self.spill_color)
+            fg = src.convert('RGBA')
+            result = Image.composite(fg, Image.new('RGBA', fg.size, 0), current_mask)
+            # Background replacement
+            bg_image = None
+            if self.bg_image_path and os.path.isfile(self.bg_image_path):
+                try: bg_image = Image.open(self.bg_image_path); bg_image.load()
+                except Exception: pass
+            if self.bg_color is not None or bg_image is not None:
+                result = AlphaCutEngine.composite_on_background(result, bg_color=self.bg_color, bg_image=bg_image)
+
             self.result.emit(pil_to_qimage(img.convert('RGBA')), pil_to_qimage(result))
         except Exception as e: self.error.emit(f"{type(e).__name__}: {e}")
         finally:
@@ -1167,11 +1220,16 @@ class BenchmarkWorker(QThread):
 
     SAMPLE_FRAMES = 10
 
-    def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0):
+    def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0,
+                 invert_mask=False, spill_strength=0, spill_color='green',
+                 shadow_strength=0, bg_color=None, bg_image_path=None):
         super().__init__()
         self.input_path = input_path; self.model_key = model_key
         self.max_res = max_res; self.edge_softness = edge_softness
         self.mask_shift = mask_shift
+        self.invert_mask = invert_mask; self.spill_strength = spill_strength
+        self.spill_color = spill_color; self.shadow_strength = shadow_strength
+        self.bg_color = bg_color; self.bg_image_path = bg_image_path
 
     def run(self):
         tmp_dir = None
@@ -1187,6 +1245,12 @@ class BenchmarkWorker(QThread):
 
             self.status.emit(f"Benchmark: extracting {n} sample frames...")
             tmp_dir = tempfile.mkdtemp(prefix='alphacut_bench_')
+
+            # Load background image once if needed
+            bg_image = None
+            if self.bg_image_path and os.path.isfile(self.bg_image_path):
+                try: bg_image = Image.open(self.bg_image_path); bg_image.load()
+                except Exception: pass
 
             # Extract N evenly spaced frames
             frames = []
@@ -1205,14 +1269,28 @@ class BenchmarkWorker(QThread):
 
             if not frames: self.error.emit("No frames extracted."); return
 
-            self.status.emit(f"Benchmark: running AI on {len(frames)} frames...")
+            self.status.emit(f"Benchmark: running AI + compositing on {len(frames)} frames...")
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m))
 
             t0 = time.time()
             for fpath in frames:
                 img = Image.open(fpath)
-                engine.remove_background(img, edge_softness=self.edge_softness,
-                                         mask_shift=self.mask_shift)
+                # Full compositing pipeline to get accurate timing
+                mask = engine.predict_mask(img)
+                if self.edge_softness > 0 or self.mask_shift != 0:
+                    mask = engine.refine_mask(mask, self.edge_softness, self.mask_shift, 0)
+                current_mask = mask
+                if self.shadow_strength > 0:
+                    current_mask = AlphaCutEngine.preserve_shadows(img, current_mask, self.shadow_strength)
+                if self.invert_mask:
+                    current_mask = AlphaCutEngine.invert_mask(current_mask)
+                src = img
+                if self.spill_strength > 0:
+                    src = AlphaCutEngine.suppress_spill(src, current_mask, self.spill_strength, self.spill_color)
+                fg = src.convert('RGBA')
+                result = Image.composite(fg, Image.new('RGBA', fg.size, 0), current_mask)
+                if self.bg_color is not None or bg_image is not None:
+                    AlphaCutEngine.composite_on_background(result, bg_color=self.bg_color, bg_image=bg_image)
             elapsed = time.time() - t0
 
             fps = len(frames) / max(elapsed, 0.001)
@@ -1308,6 +1386,7 @@ class SplitPreviewWidget(QWidget):
     def _paint_split(self, p):
         w, h = self.width(), self.height()
         iw, ih = self._processed.width(), self._processed.height()
+        if iw == 0 or ih == 0: return
         scale = min(w / iw, h / ih); dw, dh = int(iw * scale), int(ih * scale)
         ox, oy = (w - dw) // 2, (h - dh) // 2
         checker = self._checkerboard(dw, dh); p.drawImage(ox, oy, checker)
@@ -1327,7 +1406,9 @@ class SplitPreviewWidget(QWidget):
 
     def _paint_single(self, p, qi):
         w, h = self.width(), self.height()
-        iw, ih = qi.width(), qi.height(); scale = min(w/iw, h/ih)
+        iw, ih = qi.width(), qi.height()
+        if iw == 0 or ih == 0: return
+        scale = min(w/iw, h/ih)
         dw, dh = int(iw*scale), int(ih*scale); ox, oy = (w-dw)//2, (h-dh)//2
         p.drawImage(ox, oy, self._checkerboard(dw, dh))
         p.drawImage(ox, oy, qi.scaled(dw, dh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
@@ -1409,6 +1490,17 @@ class JobTable(QTableWidget):
 
     def clear_all(self):
         self.setRowCount(0)
+
+
+class NoScrollFilter(QObject):
+    """Eats scroll-wheel events on combo boxes, sliders, and spin boxes
+    so the left panel scrolls instead of accidentally changing values."""
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if not obj.hasFocus():
+                event.ignore()
+                return True  # block the event from reaching the widget
+        return super().eventFilter(obj, event)
 
 
 def make_slider(label_text, min_val, max_val, default, suffix=""):
@@ -1606,7 +1698,7 @@ class AlphaCutWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumSize(1100, 800); self.resize(1200, 860)
+        self.setMinimumSize(1100, 850); self.resize(1200, 920)
         self.setWindowIcon(get_app_icon())
         self._worker = None; self._batch_worker = None; self._preview_worker = None
         self._benchmark_worker = None
@@ -1665,14 +1757,15 @@ class AlphaCutWindow(QMainWindow):
         root = QHBoxLayout(central); root.setContentsMargins(16,16,16,16); root.setSpacing(16)
 
         # ── LEFT PANEL ──
-        left = QWidget(); left.setFixedWidth(410)
-        ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(8)
+        left = QWidget()
+        ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(10)
 
         title = QLabel(APP_NAME); title.setObjectName("title"); ll.addWidget(title)
         sub = QLabel(f"AI Video Background Removal | v{APP_VERSION}"); sub.setObjectName("subtitle"); ll.addWidget(sub)
 
         # Input
-        grp_in = QGroupBox("INPUT"); gl = QVBoxLayout(grp_in); gl.setSpacing(6)
+        grp_in = QGroupBox("INPUT"); gl = QVBoxLayout(grp_in); gl.setSpacing(8)
+        gl.setContentsMargins(12, 20, 12, 12)
         self.drop_zone = DropZone()
         self.drop_zone.file_dropped.connect(self._load_video)
         self.drop_zone.files_dropped.connect(self._load_batch)
@@ -1695,33 +1788,39 @@ class AlphaCutWindow(QMainWindow):
         self.info_w.setVisible(False); gl.addWidget(self.info_w); ll.addWidget(grp_in)
 
         # Settings
-        grp_set = QGroupBox("SETTINGS"); sl = QVBoxLayout(grp_set); sl.setSpacing(6)
+        grp_set = QGroupBox("SETTINGS"); sl = QVBoxLayout(grp_set); sl.setSpacing(4)
+        sl.setContentsMargins(12, 20, 12, 12)
         lbl_smart = QLabel("What are you processing?"); lbl_smart.setObjectName("accent"); sl.addWidget(lbl_smart)
         self.combo_smart = QComboBox()
         self.combo_smart.addItem("-- Choose preset or pick model below --")
         for p in SMART_PRESETS: self.combo_smart.addItem(p)
         self.combo_smart.currentIndexChanged.connect(self._smart_pick); sl.addWidget(self.combo_smart)
+        sl.addSpacing(6)
         sl.addWidget(QLabel("AI Model"))
         self.combo_model = QComboBox()
         for name in MODELS: self.combo_model.addItem(name)
         self.combo_model.currentIndexChanged.connect(self._update_res_suggestion)
         sl.addWidget(self.combo_model)
+        sl.addSpacing(6)
         lbl2 = QLabel("Output Format"); lbl2.setObjectName("accent"); sl.addWidget(lbl2)
         self.combo_fmt = QComboBox()
         for name in OUTPUT_FORMATS: self.combo_fmt.addItem(name)
         self.combo_fmt.currentIndexChanged.connect(self._update_estimate); sl.addWidget(self.combo_fmt)
         self.lbl_estimate = QLabel(""); self.lbl_estimate.setObjectName("subtitle"); sl.addWidget(self.lbl_estimate)
+        sl.addSpacing(4)
         row = QHBoxLayout(); row.addWidget(QLabel("Max Resolution"))
         self.spin_res = QSpinBox(); self.spin_res.setRange(0, 7680); self.spin_res.setSingleStep(240)
         self.spin_res.setValue(0); self.spin_res.setSpecialValueText("Original"); self.spin_res.setSuffix("px")
         row.addWidget(self.spin_res); sl.addLayout(row)
         self.chk_audio = QCheckBox("Keep original audio"); self.chk_audio.setChecked(True); sl.addWidget(self.chk_audio)
+        sl.addSpacing(4)
 
         # Naming pattern
         name_row = QHBoxLayout(); name_row.addWidget(QLabel("Naming"))
         self.combo_naming = QComboBox()
         for pat in NAMING_PATTERNS: self.combo_naming.addItem(pat)
         name_row.addWidget(self.combo_naming, stretch=1); sl.addLayout(name_row)
+        sl.addSpacing(4)
 
         # Presets
         preset_row = QHBoxLayout()
@@ -1734,7 +1833,8 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(grp_set)
 
         # Refinement
-        grp_ref = QGroupBox("REFINEMENT"); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(6)
+        grp_ref = QGroupBox("REFINEMENT"); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(8)
+        rl2.setContentsMargins(12, 20, 12, 12)
         w1, self.sl_edge, _ = make_slider("Edge Softness", 0, 100, 0); rl2.addWidget(w1)
         w2, self.sl_shift, _ = make_slider("Mask Shift", -20, 20, 0); rl2.addWidget(w2)
         w3, self.sl_temporal, _ = make_slider("Temporal Smooth", 0, 7, 0, "f"); rl2.addWidget(w3)
@@ -1742,17 +1842,21 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(grp_ref)
 
         # Compositing
-        grp_comp = QGroupBox("COMPOSITING"); cl = QVBoxLayout(grp_comp); cl.setSpacing(6)
+        grp_comp = QGroupBox("COMPOSITING"); cl = QVBoxLayout(grp_comp); cl.setSpacing(8)
+        cl.setContentsMargins(12, 20, 12, 12)
 
         self.chk_invert = QCheckBox("Invert mask (remove subject)"); cl.addWidget(self.chk_invert)
+        cl.addSpacing(4)
 
         w5, self.sl_spill, _ = make_slider("Spill Suppress", 0, 100, 0, "%"); cl.addWidget(w5)
         spill_row = QHBoxLayout(); spill_row.addWidget(QLabel("Spill Color"))
         self.combo_spill = QComboBox()
         for sc in ['green', 'blue', 'red']: self.combo_spill.addItem(sc.capitalize(), sc)
         spill_row.addWidget(self.combo_spill); cl.addLayout(spill_row)
+        cl.addSpacing(4)
 
         w6, self.sl_shadow, _ = make_slider("Shadow Preserve", 0, 100, 0, "%"); cl.addWidget(w6)
+        cl.addSpacing(4)
 
         bg_row = QHBoxLayout(); bg_row.addWidget(QLabel("Background"))
         self.combo_bg = QComboBox()
@@ -1787,7 +1891,7 @@ class AlphaCutWindow(QMainWindow):
 
         # Output actions
         out_row = QHBoxLayout()
-        self.btn_copy_path = QPushButton("Copy Path"); self.btn_copy_path.setObjectName("secondary")
+        self.btn_copy_path = QPushButton("Copy Path")
         self.btn_copy_path.setObjectName("small"); self.btn_copy_path.setVisible(False)
         self.btn_copy_path.clicked.connect(self._copy_path); out_row.addWidget(self.btn_copy_path)
         self.btn_open_folder = QPushButton("Open Folder"); self.btn_open_folder.setObjectName("small")
@@ -1826,7 +1930,21 @@ class AlphaCutWindow(QMainWindow):
         self.log_view = QTextEdit(); self.log_view.setReadOnly(True); self.log_view.setMaximumHeight(130)
         lgl.addWidget(self.log_view); rl.addWidget(grp_log, stretch=1)
 
-        root.addWidget(left); root.addWidget(right, stretch=1)
+        # Wrap left panel in scroll area to prevent crushing on small screens
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFixedWidth(430)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+
+        # Prevent scroll-wheel from changing settings — scroll the panel instead
+        self._no_scroll = NoScrollFilter(self)
+        for widget in left.findChildren((QComboBox, QSlider, QSpinBox)):
+            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            widget.installEventFilter(self._no_scroll)
+
+        root.addWidget(left_scroll); root.addWidget(right, stretch=1)
         self._toast = ToastWidget(central)
         self._glow_timer = QTimer(self); self._glow_timer.setInterval(80); self._glow_phase = 0.0
         self._glow_timer.timeout.connect(self._animate_progress)
@@ -1873,11 +1991,15 @@ class AlphaCutWindow(QMainWindow):
     def _run_benchmark(self):
         if not self._input_path or not find_ffmpeg(): return
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
+        comp = self._get_compositing_params()
         self.btn_benchmark.setEnabled(False); self.btn_benchmark.setText("Running...")
         self.lbl_status.setText("Benchmarking...")
         self._benchmark_worker = BenchmarkWorker(
             self._input_path, model_key, self.spin_res.value(),
-            edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value())
+            edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
+            invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
+            spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
+            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'])
         self._benchmark_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._benchmark_worker.result.connect(self._benchmark_done)
         self._benchmark_worker.error.connect(self._benchmark_err)
@@ -2111,7 +2233,14 @@ class AlphaCutWindow(QMainWindow):
         self._batch_jobs = [p for p in paths if os.path.isfile(p)]
         if not self._batch_jobs: return
         self._input_path = self._batch_jobs[0]
-        for p in self._batch_jobs: add_recent_file(p)
+        # Batch-update recent files in a single read-modify-write
+        s = load_settings()
+        recent = s.get('recent_files', [])
+        for p in self._batch_jobs:
+            if p in recent: recent.remove(p)
+            recent.insert(0, p)
+        s['recent_files'] = recent[:20]
+        save_settings(s)
         self.grp_batch.setVisible(True); self.job_table.clear_all()
         for p in self._batch_jobs: self.job_table.add_job(os.path.basename(p))
         self.drop_zone.setText(f"{len(self._batch_jobs)} videos queued")
@@ -2131,11 +2260,15 @@ class AlphaCutWindow(QMainWindow):
     def _preview_frame(self):
         if not self._input_path or not find_ffmpeg(): return
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
+        comp = self._get_compositing_params()
         self.btn_preview.setEnabled(False); self.btn_preview.setText("Previewing...")
         self._preview_worker = PreviewFrameWorker(
             self._input_path, model_key, self.spin_res.value(),
             edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
-            seek_pct=self.sl_scrub.value() / 100.0)
+            seek_pct=self.sl_scrub.value() / 100.0,
+            invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
+            spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
+            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'])
         self._preview_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._preview_worker.result.connect(self._preview_done)
         self._preview_worker.error.connect(self._preview_err)
@@ -2281,10 +2414,13 @@ class AlphaCutWindow(QMainWindow):
     def closeEvent(self, event):
         self._save_settings(); self._stop_glow()
         if self._tray: self._tray.hide()
-        for w in [self._worker, self._batch_worker, self._preview_worker, self._benchmark_worker]:
+        # Cancel all workers first, then wait (parallel cancel, sequential wait)
+        workers = [self._worker, self._batch_worker, self._preview_worker, self._benchmark_worker]
+        for w in workers:
+            if w and w.isRunning() and hasattr(w, 'cancel'): w.cancel()
+        for w in workers:
             if w and w.isRunning():
-                if hasattr(w, 'cancel'): w.cancel()
-                w.quit(); w.wait(3000)
+                w.quit(); w.wait(1500)
         event.accept()
 
 
@@ -2293,6 +2429,10 @@ class AlphaCutWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════════════════════
 def run_cli(args):
     """Headless CLI processing."""
+    # Qt signals require a QCoreApplication even in CLI mode
+    from PyQt6.QtCore import QCoreApplication
+    cli_app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+
     if not find_ffmpeg():
         print("ERROR: FFmpeg not found."); sys.exit(1)
     model_names = list(MODELS.keys())
