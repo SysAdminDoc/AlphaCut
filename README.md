@@ -134,32 +134,3 @@ AlphaCut.py (single file, ~2,400 lines)
 ├── CLI — Full argparse headless interface
 └── Settings/Presets — JSON persistence
 ```
-
-## Changelog
-
-### v1.0.0 — Polish & Distribution
-- Menu bar: File, Tools, Help with keyboard navigation
-- About dialog with version, system info, GitHub links
-- Update checker (GitHub releases API, silent + manual)
-- Model Manager dialog (view/delete/clear cached models)
-- Resume interrupted jobs (progress saved every 50 frames)
-- Fixed resume file path consistency
-
-### v0.7.0 — Advanced Compositing
-- Background replacement (solid color / custom / image)
-- Spill suppression, shadow preservation, mask inversion
-
-### v0.6.0 — Performance
-- Pipelined I/O, frame skip, benchmark, memory monitoring
-
-### v0.5.0 — Batch & Workflow
-- Batch queue, job table, CLI, presets, recent files
-
-### v0.4.0 — UI/UX Overhaul
-### v0.3.0 — Core Engine & Quality
-### v0.2.0 — Direct ONNX Inference
-### v0.1.0 — Initial Release
-
-## License
-
-MIT
