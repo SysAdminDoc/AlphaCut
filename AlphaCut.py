@@ -132,8 +132,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QComboBox, QFileDialog, QGroupBox, QGridLayout,
     QTextEdit, QSpinBox, QSlider, QCheckBox, QGraphicsOpacityEffect,
     QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox,
-    QScrollArea
+    QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent
 from PyQt6.QtGui import (
@@ -190,11 +189,12 @@ MODELS = {
 }
 
 OUTPUT_FORMATS = {
-    "ProRes 4444 + Alpha (.mov)": "prores",
+    "MP4 H.264 (.mp4) — Smallest": "mp4",
     "WebM VP9 + Alpha (.webm)": "webm",
-    "PNG Image Sequence": "png_seq",
     "MP4 + Green Screen (.mp4)": "greenscreen",
+    "ProRes 4444 + Alpha (.mov)": "prores",
     "Matte Only — Grayscale (.mov)": "matte",
+    "PNG Image Sequence": "png_seq",
 }
 
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.ts', '.mts'}
@@ -284,7 +284,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov'}
+    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
     ext = ext_map.get(fmt, '.mov')
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
@@ -310,14 +310,14 @@ DARK_STYLE = """
 QMainWindow { background-color: #0d0f14; }
 QWidget { background-color: transparent; color: #c8ccd4; }
 QGroupBox {
-    background-color: #13161d; border: 1px solid #1e2230; border-radius: 12px;
-    margin-top: 1.4em; padding: 20px 12px 12px 12px;
+    background-color: #13161d; border: 1px solid #1e2230; border-radius: 10px;
+    margin-top: 1em; padding: 14px 10px 8px 10px;
     font-weight: 600; font-size: 11px; color: #6e7a94;
 }
-QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 8px; color: #555d73; letter-spacing: 1px; }
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: #555d73; letter-spacing: 1px; }
 QPushButton {
     background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #6c5ce7, stop:1 #a855f7);
-    color: #fff; border: none; padding: 10px 24px; border-radius: 8px; font-weight: 700; font-size: 12px;
+    color: #fff; border: none; padding: 7px 20px; border-radius: 8px; font-weight: 700; font-size: 12px;
 }
 QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #7c6cf7, stop:1 #b865ff); }
 QPushButton:pressed { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #5c4cd7, stop:1 #9845e7); }
@@ -325,10 +325,10 @@ QPushButton:disabled { background: #1e2230; color: #3d4455; }
 QPushButton#secondary { background: #1a1e2e; border: 1px solid #2a2e40; color: #8b92a5; }
 QPushButton#secondary:hover { background: #222640; border-color: #6c5ce7; color: #c8ccd4; }
 QPushButton#danger { background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #dc2626, stop:1 #ef4444); }
-QPushButton#small { padding: 6px 14px; font-size: 11px; border-radius: 6px; }
+QPushButton#small { padding: 5px 12px; font-size: 11px; border-radius: 6px; }
 QComboBox {
     background-color: #13161d; color: #c8ccd4; border: 1px solid #1e2230;
-    border-radius: 8px; padding: 8px 12px; font-size: 12px; min-height: 22px;
+    border-radius: 8px; padding: 5px 10px; font-size: 12px; min-height: 18px;
 }
 QComboBox::drop-down { border: none; width: 30px; }
 QComboBox::down-arrow { image: none; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 6px solid #6e7a94; margin-right: 10px; }
@@ -343,20 +343,20 @@ QTextEdit {
     font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 11px; selection-background-color: #6c5ce7;
 }
 QLabel { color: #8b92a5; font-size: 12px; }
-QLabel#title { color: #e2e5ed; font-size: 22px; font-weight: 800; }
+QLabel#title { color: #e2e5ed; font-size: 18px; font-weight: 800; }
 QLabel#subtitle { color: #4a5168; font-size: 12px; font-weight: 500; }
-QLabel#statValue { color: #e2e5ed; font-size: 15px; font-weight: 700; }
-QLabel#statLabel { color: #4a5168; font-size: 10px; font-weight: 600; letter-spacing: 1px; }
+QLabel#statValue { color: #e2e5ed; font-size: 13px; font-weight: 700; }
+QLabel#statLabel { color: #4a5168; font-size: 9px; font-weight: 600; letter-spacing: 1px; }
 QLabel#accent { color: #a855f7; font-weight: 700; }
 QLabel#sliderVal { color: #6c5ce7; font-weight: 700; font-size: 12px; min-width: 30px; }
-QSpinBox { background-color: #13161d; color: #c8ccd4; border: 1px solid #1e2230; border-radius: 6px; padding: 6px 10px; }
+QSpinBox { background-color: #13161d; color: #c8ccd4; border: 1px solid #1e2230; border-radius: 6px; padding: 4px 8px; }
 QSpinBox::up-button, QSpinBox::down-button { background: #1a1e2e; border: none; width: 20px; }
-QSlider::groove:horizontal { background: #1a1d28; height: 6px; border-radius: 3px; }
-QSlider::handle:horizontal { background: #6c5ce7; width: 16px; height: 16px; margin: -5px 0; border-radius: 8px; }
+QSlider::groove:horizontal { background: #1a1d28; height: 4px; border-radius: 2px; }
+QSlider::handle:horizontal { background: #6c5ce7; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
 QSlider::handle:horizontal:hover { background: #7c6cf7; }
-QSlider::sub-page:horizontal { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6c5ce7, stop:1 #a855f7); border-radius: 3px; }
-QCheckBox { color: #8b92a5; font-size: 12px; spacing: 8px; }
-QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #2a2e40; background: #13161d; }
+QSlider::sub-page:horizontal { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #6c5ce7, stop:1 #a855f7); border-radius: 2px; }
+QCheckBox { color: #8b92a5; font-size: 12px; spacing: 6px; }
+QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #2a2e40; background: #13161d; }
 QCheckBox::indicator:checked { background: #6c5ce7; border-color: #6c5ce7; }
 QScrollBar:vertical { background: transparent; width: 8px; border: none; }
 QScrollBar::handle:vertical { background: #2a2e40; border-radius: 4px; min-height: 40px; }
@@ -611,7 +611,7 @@ def get_video_info(filepath):
 def estimate_output_size(info, fmt):
     if not info: return 0
     px = info['width'] * info['height']; frames = info['total_frames']
-    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3}
+    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
 def pil_to_qimage(pil_img):
@@ -728,7 +728,8 @@ class ProcessingWorker(QThread):
     def __init__(self, input_path, output_path, model_key, output_format, max_res,
                  edge_softness=0, mask_shift=0, temporal_smooth=0, keep_audio=True,
                  frame_skip=1, invert_mask=False, spill_strength=0, spill_color='green',
-                 shadow_strength=0, bg_color=None, bg_image_path=None, resume_from=0):
+                 shadow_strength=0, bg_color=None, bg_image_path=None, resume_from=0,
+                 quality=70):
         super().__init__()
         self.input_path = input_path; self.output_path = output_path
         self.model_key = model_key; self.output_format = output_format
@@ -738,7 +739,8 @@ class ProcessingWorker(QThread):
         self.invert_mask = invert_mask; self.spill_strength = spill_strength
         self.spill_color = spill_color; self.shadow_strength = shadow_strength
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
-        self.resume_from = resume_from  # skip frames already processed
+        self.resume_from = resume_from
+        self.quality = max(0, min(100, quality))
         self._cancelled = False
 
     def cancel(self): self._cancelled = True
@@ -786,23 +788,46 @@ class ProcessingWorker(QThread):
         persist_out = os.path.join(APP_DIR, f"wip_{progress_hash}")
         resume_frame = self.resume_from
         try:
+            # ── PHASE 1: EXTRACTION (0% → 10%) ──
             self.status.emit("Extracting frames...")
-            cmd = [ffmpeg, '-i', self.input_path, '-fps_mode', 'cfr']
+            self.progress.emit(0)
+            expected_frames = info.get('total_frames', 0)
+            cmd = [ffmpeg, '-v', 'warning', '-i', self.input_path, '-fps_mode', 'cfr']
             if self.max_res > 0 and max(w, h) > self.max_res:
                 cmd += ['-vf', f'scale={sw}:{sh}']
-            cmd.append(os.path.join(frames_in, 'frame_%06d.png'))
-            proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=_SUBPROCESS_FLAGS)
+            frame_pattern = os.path.join(frames_in, 'frame_%06d.bmp')
+            cmd.append(frame_pattern)
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                     creationflags=_SUBPROCESS_FLAGS)
+            # Monitor extraction progress by counting output files
+            last_count = 0
+            while proc.poll() is None:
+                if self._cancelled:
+                    proc.terminate(); proc.wait(5); return
+                time.sleep(0.3)
+                count = len(glob.glob(os.path.join(frames_in, 'frame_*.bmp')))
+                if count != last_count:
+                    last_count = count
+                    if expected_frames > 0:
+                        ext_pct = min(10, int((count / expected_frames) * 10))
+                        self.progress.emit(ext_pct)
+                        self.status.emit(f"Extracting frames... {count}/{expected_frames}")
+                        self.frame_info.emit(count, expected_frames)
+                    else:
+                        self.status.emit(f"Extracting frames... {count}")
+            stderr_out = proc.stderr.read().decode(errors='replace') if proc.stderr else ''
             if proc.returncode != 0:
-                self.error.emit(f"FFmpeg extraction failed:\n{proc.stderr[-500:]}"); return
-            frame_files = sorted(glob.glob(os.path.join(frames_in, 'frame_*.png')))
+                self.error.emit(f"FFmpeg extraction failed:\n{stderr_out[-500:]}"); return
+            frame_files = sorted(glob.glob(os.path.join(frames_in, 'frame_*.bmp')))
             total = len(frame_files)
             if total == 0: self.error.emit("No frames extracted."); return
+            self.progress.emit(10)
             self.log.emit(f"Extracted {total} frames")
 
             # Resume detection: check persistent output directory for existing frames
             os.makedirs(persist_out, exist_ok=True)
             if resume_frame <= 0:
-                existing_out = sorted(glob.glob(os.path.join(persist_out, 'frame_*.png')))
+                existing_out = sorted(glob.glob(os.path.join(persist_out, 'frame_*.tiff')))
                 if existing_out and os.path.isfile(progress_file):
                     try:
                         with open(progress_file) as pf:
@@ -810,22 +835,42 @@ class ProcessingWorker(QThread):
                         if (pd.get('input') == self.input_path and
                             pd.get('output') == self.output_path and
                             pd.get('total') == total):
-                            resume_frame = len(existing_out)
-                            if resume_frame > 0:
-                                self.log.emit(f"Resuming from frame {resume_frame}/{total} ({len(existing_out)} cached)")
+                            # Validate cached frames aren't corrupt
+                            valid = 0
+                            for fp in existing_out:
+                                try:
+                                    im = Image.open(fp); im.verify(); valid += 1
+                                except Exception:
+                                    self.log.emit(f"Resume: corrupt frame detected, trimming cache")
+                                    for fp2 in existing_out[valid:]:
+                                        try: os.remove(fp2)
+                                        except Exception: pass
+                                    break
+                            if valid > 0:
+                                resume_frame = valid
+                                self.log.emit(f"Resuming from frame {resume_frame}/{total} ({valid} verified)")
                     except Exception:
                         pass
-                if resume_frame <= 0 and existing_out:
-                    # Stale WIP dir from different config — clean it
-                    for f in existing_out:
+                # If not resuming, clean any stale files in WIP dir
+                if resume_frame <= 0:
+                    stale = glob.glob(os.path.join(persist_out, 'frame_*.tiff'))
+                    stale += glob.glob(os.path.join(persist_out, 'frame_*.bmp'))   # clean legacy
+                    stale += glob.glob(os.path.join(persist_out, 'frame_*.png'))   # clean legacy
+                    for f in stale:
                         try: os.remove(f)
+                        except Exception: pass
+                    if os.path.isfile(progress_file):
+                        try: os.remove(progress_file)
                         except Exception: pass
             # Use persistent dir for output frames instead of temp
             frames_out = persist_out
 
+            # ── PHASE 2: MODEL LOAD (10% → 15%) ──
             self.status.emit("Loading AI model...")
+            self.progress.emit(11)
             engine = get_engine(self.model_key, log_fn=self.log.emit)
             engine.reset_temporal()
+            self.progress.emit(15)
             if self._cancelled: return
 
             matte_only = self.output_format == 'matte'
@@ -859,12 +904,12 @@ class ProcessingWorker(QThread):
             save_errors = []
 
             def _reader_thread():
-                """Pre-reads PNGs into PIL Images ahead of inference."""
+                """Pre-reads BMP frames into PIL Images ahead of inference."""
                 for i, fpath in enumerate(frame_files):
                     if self._cancelled: break
                     try:
                         img = Image.open(fpath)
-                        img.load()  # force read from disk
+                        img.load()
                         read_q.put((i, img))
                         try: os.remove(fpath)
                         except Exception: pass
@@ -881,7 +926,7 @@ class ProcessingWorker(QThread):
                         if item is None: break
                         idx, result = item
                         try:
-                            result.save(os.path.join(frames_out, f'frame_{idx+1:06d}.png'), 'PNG')
+                            result.save(os.path.join(frames_out, f'frame_{idx+1:06d}.tiff'), 'TIFF')
                         except Exception as e:
                             save_errors.append(f"Save error frame {idx}: {e}")
                         save_q.task_done()
@@ -902,6 +947,9 @@ class ProcessingWorker(QThread):
             last_inferred_idx = -1
             os.makedirs(APP_DIR, exist_ok=True)
 
+            # Progress mapping: AI processing occupies 15% → 90% of the bar
+            _PHASE3_START, _PHASE3_END = 15, 90
+
             # Pre-resize background image to frame dimensions once
             if bg_image is not None:
                 bg_image = bg_image.convert('RGB').resize((sw, sh), Image.Resampling.LANCZOS)
@@ -921,9 +969,9 @@ class ProcessingWorker(QThread):
 
                 # Resume: skip already-processed frames
                 if frame_num < resume_frame:
-                    out_frame = os.path.join(frames_out, f'frame_{idx+1:06d}.png')
+                    out_frame = os.path.join(frames_out, f'frame_{idx+1:06d}.tiff')
                     if os.path.isfile(out_frame):
-                        pct = int(((frame_num + 1) / total) * 100)
+                        pct = _PHASE3_START + int(((frame_num + 1) / total) * (_PHASE3_END - _PHASE3_START))
                         self.progress.emit(pct)
                         continue
                     else:
@@ -976,7 +1024,7 @@ class ProcessingWorker(QThread):
                 save_q.put((idx, result))
                 last_result = result
 
-                pct = int(((frame_num + 1) / total) * 100)
+                pct = _PHASE3_START + int(((frame_num + 1) / total) * (_PHASE3_END - _PHASE3_START))
                 self.progress.emit(pct); self.frame_info.emit(frame_num + 1, total)
                 elapsed = time.time() - t0
                 if frame_num > 2:
@@ -1019,8 +1067,11 @@ class ProcessingWorker(QThread):
             et = time.time() - t0
             inferred = total if self.frame_skip <= 1 else (total + self.frame_skip - 1) // self.frame_skip
             self.log.emit(f"Processed {total} frames ({inferred} inferred) in {_ftime(et)} ({total/max(et,0.1):.1f} fps)")
+
+            # ── PHASE 4: ENCODING (90% → 100%) ──
             self.status.emit("Encoding output...")
-            out = self._encode(ffmpeg, frames_out, fps, info)
+            self.progress.emit(90)
+            out = self._encode(ffmpeg, frames_out, fps, info, total)
 
             # Clean up persistent WIP directory after encoding
             try:
@@ -1034,39 +1085,96 @@ class ProcessingWorker(QThread):
             else: self.error.emit("Encoding failed.")
         finally: shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    def _encode(self, ffmpeg, frames_dir, fps, info):
-        pat = os.path.join(frames_dir, 'frame_%06d.png'); fmt = self.output_format
+    def _encode(self, ffmpeg, frames_dir, fps, info, total_frames=0):
+        pat = os.path.join(frames_dir, 'frame_%06d.tiff'); fmt = self.output_format
+        q = self.quality  # 0-100 scale
+
         if fmt == 'png_seq':
             out_dir = self.output_path
             if os.path.splitext(out_dir)[1] != '': out_dir = os.path.splitext(out_dir)[0] + '_frames'
             os.makedirs(out_dir, exist_ok=True)
-            for f in sorted(glob.glob(os.path.join(frames_dir, 'frame_*.png'))): shutil.copy2(f, out_dir)
+            tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
+            for i, f in enumerate(tiff_files):
+                out_name = os.path.splitext(os.path.basename(f))[0] + '.png'
+                Image.open(f).save(os.path.join(out_dir, out_name), 'PNG')
+                if len(tiff_files) > 0:
+                    pct = 90 + int(((i + 1) / len(tiff_files)) * 10)
+                    self.progress.emit(pct)
+                    self.status.emit(f"Saving PNG {i+1}/{len(tiff_files)}")
+            self.progress.emit(100)
             return out_dir
-        first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.png')))[0]
+
+        first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
         out_file = os.path.splitext(self.output_path)[0] + ext_map.get(fmt, '.mov')
+
+        # Quality mapping per format:
+        # q=0 (smallest) → highest CRF / lowest bitrate
+        # q=100 (best) → lowest CRF / highest bitrate
         if fmt == 'prores':
-            cmd = [ffmpeg, '-y', '-framerate', str(fps), '-i', pat, '-c:v', 'prores_ks', '-profile:v', '4444',
-                   '-pix_fmt', 'yuva444p10le', '-vendor', 'apl0', '-bits_per_mb', '8000']
+            # bits_per_mb: q=0→800, q=50→2000, q=100→8000
+            bpm = int(800 + (q / 100) ** 1.5 * 7200)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat, '-c:v', 'prores_ks', '-profile:v', '4444',
+                   '-pix_fmt', 'yuva444p10le', '-vendor', 'apl0', '-bits_per_mb', str(bpm)]
+            self.log.emit(f"ProRes quality: bits_per_mb={bpm}")
         elif fmt == 'webm':
-            cmd = [ffmpeg, '-y', '-framerate', str(fps), '-i', pat, '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
-                   '-crf', '25', '-b:v', '0', '-auto-alt-ref', '0', '-row-mt', '1', '-threads', '0']
+            # CRF: q=0→45, q=50→30, q=100→15 (lower CRF = better quality)
+            crf = int(45 - (q / 100) * 30)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat, '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
+                   '-crf', str(crf), '-b:v', '0', '-auto-alt-ref', '0', '-row-mt', '1', '-threads', '0']
+            self.log.emit(f"WebM quality: CRF={crf}")
+        elif fmt == 'mp4':
+            # CRF: q=0→32, q=50→23, q=100→14 (H.264, no alpha)
+            crf = int(32 - (q / 100) * 18)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart']
+            self.log.emit(f"MP4 quality: CRF={crf}")
         elif fmt == 'greenscreen':
-            cmd = [ffmpeg, '-y', '-framerate', str(fps), '-i', pat, '-filter_complex',
+            # CRF: q=0→30, q=50→23, q=100→14
+            crf = int(30 - (q / 100) * 16)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat, '-filter_complex',
                    f"color=c=#00ff00:s={fw}x{fh}:r={fps}[bg];[bg][0:v]overlay=shortest=1",
-                   '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p']
+                   '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p']
+            self.log.emit(f"Greenscreen quality: CRF={crf}")
         elif fmt == 'matte':
-            cmd = [ffmpeg, '-y', '-framerate', str(fps), '-i', pat, '-vf', 'format=gray',
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat, '-vf', 'format=gray',
                    '-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le']
         else: self.error.emit(f"Unknown format: {fmt}"); return None
+
         if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
-                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt == 'greenscreen' else 'copy'), '-shortest']
-        cmd.append(out_file)
+                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4') else 'copy'), '-shortest']
+        # Add -progress pipe:1 for real-time encode progress
+        cmd += ['-progress', 'pipe:1', out_file]
         self.log.emit(f"Encoding: {fmt}...")
-        proc = subprocess.run(cmd, capture_output=True, text=True, creationflags=_SUBPROCESS_FLAGS)
-        if proc.returncode != 0: self.log.emit(f"FFmpeg: {proc.stderr[-400:]}")
+        duration = info.get('duration', 0)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 creationflags=_SUBPROCESS_FLAGS, text=True)
+        while proc.poll() is None:
+            if self._cancelled:
+                proc.terminate(); proc.wait(5); return out_file
+            line = proc.stdout.readline().strip() if proc.stdout else ''
+            if line.startswith('frame='):
+                try:
+                    enc_frame = int(line.split('=')[1])
+                    if total_frames > 0:
+                        enc_pct = 90 + min(10, int((enc_frame / total_frames) * 10))
+                        self.progress.emit(enc_pct)
+                        self.status.emit(f"Encoding {fmt}... {enc_frame}/{total_frames}")
+                except (ValueError, IndexError):
+                    pass
+            elif line.startswith('out_time_us=') and duration > 0:
+                try:
+                    us = int(line.split('=')[1])
+                    enc_pct = 90 + min(10, int((us / (duration * 1_000_000)) * 10))
+                    self.progress.emit(enc_pct)
+                except (ValueError, IndexError):
+                    pass
+        stderr_out = proc.stderr.read() if proc.stderr else ''
+        if proc.returncode != 0: self.log.emit(f"FFmpeg: {stderr_out[-400:]}")
+        self.progress.emit(100)
         return out_file
 
 
@@ -1108,7 +1216,8 @@ class BatchWorker(QThread):
                 spill_color=job.get('spill_color', 'green'),
                 shadow_strength=job.get('shadow_strength', 0),
                 bg_color=job.get('bg_color'),
-                bg_image_path=job.get('bg_image_path'))
+                bg_image_path=job.get('bg_image_path'),
+                quality=job.get('quality', 70))
 
             # Wire signals to batch relay
             worker.progress.connect(lambda pct, idx=i: self.job_progress.emit(idx, pct))
@@ -1126,7 +1235,7 @@ class BatchWorker(QThread):
                 else:
                     # Check if output exists
                     out = job['output']
-                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': ''}
+                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4'}
                     if job['format'] != 'png_seq':
                         out = os.path.splitext(out)[0] + ext_map.get(job['format'], '.mov')
                     if os.path.exists(out):
@@ -1168,7 +1277,7 @@ class PreviewFrameWorker(QThread):
             if not info: self.error.emit("Could not read video info."); return
             seek_sec = max(0, info['duration'] * self.seek_pct)
             w, h = info['width'], info['height']
-            fd, tmp = tempfile.mkstemp(suffix='.png', prefix='alphacut_preview_'); os.close(fd)
+            fd, tmp = tempfile.mkstemp(suffix='.bmp', prefix='alphacut_preview_'); os.close(fd)
             cmd = [ffmpeg, '-ss', f'{seek_sec:.2f}', '-i', self.input_path, '-frames:v', '1', '-y']
             if self.max_res > 0 and max(w, h) > self.max_res:
                 ratio = self.max_res / max(w, h)
@@ -1256,7 +1365,7 @@ class BenchmarkWorker(QThread):
             frames = []
             for i in range(n):
                 seek = info['duration'] * (i + 0.5) / n
-                fd, tmp = tempfile.mkstemp(suffix='.png', dir=tmp_dir); os.close(fd)
+                fd, tmp = tempfile.mkstemp(suffix='.bmp', dir=tmp_dir); os.close(fd)
                 cmd = [ffmpeg, '-ss', f'{seek:.2f}', '-i', self.input_path, '-frames:v', '1', '-y']
                 if self.max_res > 0 and max(w, h) > self.max_res:
                     ratio = self.max_res / max(w, h)
@@ -1319,14 +1428,14 @@ class DropZone(QLabel):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True); self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(100); self._set_style(False)
-        self.setText("Drop video file(s) here\nor click Browse")
+        self.setMinimumHeight(60); self._set_style(False)
+        self.setText("Drop video file(s) here or click Browse")
 
     def _set_style(self, active):
         bc = '#6c5ce7' if active else '#1e2230'
         bg = '#0f0a1a' if active else '#0a0c10'
         tc = '#a855f7' if active else '#3d4455'
-        self.setStyleSheet(f"QLabel {{ background-color: {bg}; border: 2px dashed {bc}; border-radius: 16px; color: {tc}; font-size: 13px; padding: 20px; }}")
+        self.setStyleSheet(f"QLabel {{ background-color: {bg}; border: 2px dashed {bc}; border-radius: 12px; color: {tc}; font-size: 12px; padding: 10px; }}")
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -1504,8 +1613,8 @@ class NoScrollFilter(QObject):
 
 
 def make_slider(label_text, min_val, max_val, default, suffix=""):
-    w = QWidget(); lay = QHBoxLayout(w); lay.setContentsMargins(0,0,0,0); lay.setSpacing(8)
-    lbl = QLabel(label_text); lbl.setFixedWidth(110); lay.addWidget(lbl)
+    w = QWidget(); lay = QHBoxLayout(w); lay.setContentsMargins(0,0,0,0); lay.setSpacing(6)
+    lbl = QLabel(label_text); lbl.setFixedWidth(95); lay.addWidget(lbl)
     slider = QSlider(Qt.Orientation.Horizontal); slider.setRange(min_val, max_val); slider.setValue(default)
     lay.addWidget(slider, stretch=1)
     val_lbl = QLabel(f"{default}{suffix}"); val_lbl.setObjectName("sliderVal")
@@ -1698,7 +1807,7 @@ class AlphaCutWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumSize(1100, 850); self.resize(1200, 920)
+        self.setMinimumSize(1050, 800); self.resize(1200, 900)
         self.setWindowIcon(get_app_icon())
         self._worker = None; self._batch_worker = None; self._preview_worker = None
         self._benchmark_worker = None
@@ -1754,24 +1863,21 @@ class AlphaCutWindow(QMainWindow):
 
     def _build_ui(self):
         central = QWidget(); self.setCentralWidget(central)
-        root = QHBoxLayout(central); root.setContentsMargins(16,16,16,16); root.setSpacing(16)
+        root = QHBoxLayout(central); root.setContentsMargins(10,10,10,10); root.setSpacing(12)
 
         # ── LEFT PANEL ──
-        left = QWidget()
-        ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(10)
-
-        title = QLabel(APP_NAME); title.setObjectName("title"); ll.addWidget(title)
-        sub = QLabel(f"AI Video Background Removal | v{APP_VERSION}"); sub.setObjectName("subtitle"); ll.addWidget(sub)
+        left = QWidget(); left.setFixedWidth(400)
+        ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(4)
 
         # Input
-        grp_in = QGroupBox("INPUT"); gl = QVBoxLayout(grp_in); gl.setSpacing(8)
-        gl.setContentsMargins(12, 20, 12, 12)
+        grp_in = QGroupBox("INPUT"); gl = QVBoxLayout(grp_in); gl.setSpacing(4)
+        gl.setContentsMargins(10, 16, 10, 8)
         self.drop_zone = DropZone()
         self.drop_zone.file_dropped.connect(self._load_video)
         self.drop_zone.files_dropped.connect(self._load_batch)
         gl.addWidget(self.drop_zone)
 
-        btn_row = QHBoxLayout()
+        btn_row = QHBoxLayout(); btn_row.setSpacing(4)
         btn_browse = QPushButton("Browse"); btn_browse.setObjectName("secondary"); btn_browse.clicked.connect(self._browse)
         btn_row.addWidget(btn_browse)
         btn_batch = QPushButton("Browse Batch"); btn_batch.setObjectName("secondary"); btn_batch.clicked.connect(self._browse_batch)
@@ -1780,7 +1886,7 @@ class AlphaCutWindow(QMainWindow):
         self.btn_recent.clicked.connect(self._show_recent); btn_row.addWidget(self.btn_recent)
         gl.addLayout(btn_row)
 
-        self.info_w = QWidget(); ig = QGridLayout(self.info_w); ig.setContentsMargins(0,4,0,0); ig.setSpacing(6)
+        self.info_w = QWidget(); ig = QGridLayout(self.info_w); ig.setContentsMargins(0,2,0,0); ig.setSpacing(4)
         self.s_res = self._stat("--", "Resolution"); self.s_fps = self._stat("--", "FPS")
         self.s_dur = self._stat("--", "Duration"); self.s_frm = self._stat("--", "Frames")
         ig.addWidget(self.s_res, 0, 0); ig.addWidget(self.s_fps, 0, 1)
@@ -1788,39 +1894,35 @@ class AlphaCutWindow(QMainWindow):
         self.info_w.setVisible(False); gl.addWidget(self.info_w); ll.addWidget(grp_in)
 
         # Settings
-        grp_set = QGroupBox("SETTINGS"); sl = QVBoxLayout(grp_set); sl.setSpacing(4)
-        sl.setContentsMargins(12, 20, 12, 12)
+        grp_set = QGroupBox("SETTINGS"); sl = QVBoxLayout(grp_set); sl.setSpacing(2)
+        sl.setContentsMargins(10, 16, 10, 8)
         lbl_smart = QLabel("What are you processing?"); lbl_smart.setObjectName("accent"); sl.addWidget(lbl_smart)
         self.combo_smart = QComboBox()
         self.combo_smart.addItem("-- Choose preset or pick model below --")
         for p in SMART_PRESETS: self.combo_smart.addItem(p)
         self.combo_smart.currentIndexChanged.connect(self._smart_pick); sl.addWidget(self.combo_smart)
-        sl.addSpacing(6)
         sl.addWidget(QLabel("AI Model"))
         self.combo_model = QComboBox()
         for name in MODELS: self.combo_model.addItem(name)
         self.combo_model.currentIndexChanged.connect(self._update_res_suggestion)
         sl.addWidget(self.combo_model)
-        sl.addSpacing(6)
         lbl2 = QLabel("Output Format"); lbl2.setObjectName("accent"); sl.addWidget(lbl2)
         self.combo_fmt = QComboBox()
         for name in OUTPUT_FORMATS: self.combo_fmt.addItem(name)
         self.combo_fmt.currentIndexChanged.connect(self._update_estimate); sl.addWidget(self.combo_fmt)
         self.lbl_estimate = QLabel(""); self.lbl_estimate.setObjectName("subtitle"); sl.addWidget(self.lbl_estimate)
-        sl.addSpacing(4)
+        w_qual, self.sl_quality, self.lbl_quality = make_slider("Quality", 0, 100, 70, "%"); sl.addWidget(w_qual)
         row = QHBoxLayout(); row.addWidget(QLabel("Max Resolution"))
         self.spin_res = QSpinBox(); self.spin_res.setRange(0, 7680); self.spin_res.setSingleStep(240)
         self.spin_res.setValue(0); self.spin_res.setSpecialValueText("Original"); self.spin_res.setSuffix("px")
         row.addWidget(self.spin_res); sl.addLayout(row)
         self.chk_audio = QCheckBox("Keep original audio"); self.chk_audio.setChecked(True); sl.addWidget(self.chk_audio)
-        sl.addSpacing(4)
 
         # Naming pattern
         name_row = QHBoxLayout(); name_row.addWidget(QLabel("Naming"))
         self.combo_naming = QComboBox()
         for pat in NAMING_PATTERNS: self.combo_naming.addItem(pat)
         name_row.addWidget(self.combo_naming, stretch=1); sl.addLayout(name_row)
-        sl.addSpacing(4)
 
         # Presets
         preset_row = QHBoxLayout()
@@ -1833,8 +1935,8 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(grp_set)
 
         # Refinement
-        grp_ref = QGroupBox("REFINEMENT"); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(8)
-        rl2.setContentsMargins(12, 20, 12, 12)
+        grp_ref = QGroupBox("REFINEMENT"); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(2)
+        rl2.setContentsMargins(10, 16, 10, 8)
         w1, self.sl_edge, _ = make_slider("Edge Softness", 0, 100, 0); rl2.addWidget(w1)
         w2, self.sl_shift, _ = make_slider("Mask Shift", -20, 20, 0); rl2.addWidget(w2)
         w3, self.sl_temporal, _ = make_slider("Temporal Smooth", 0, 7, 0, "f"); rl2.addWidget(w3)
@@ -1842,21 +1944,18 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(grp_ref)
 
         # Compositing
-        grp_comp = QGroupBox("COMPOSITING"); cl = QVBoxLayout(grp_comp); cl.setSpacing(8)
-        cl.setContentsMargins(12, 20, 12, 12)
+        grp_comp = QGroupBox("COMPOSITING"); cl = QVBoxLayout(grp_comp); cl.setSpacing(2)
+        cl.setContentsMargins(10, 16, 10, 8)
 
         self.chk_invert = QCheckBox("Invert mask (remove subject)"); cl.addWidget(self.chk_invert)
-        cl.addSpacing(4)
 
         w5, self.sl_spill, _ = make_slider("Spill Suppress", 0, 100, 0, "%"); cl.addWidget(w5)
         spill_row = QHBoxLayout(); spill_row.addWidget(QLabel("Spill Color"))
         self.combo_spill = QComboBox()
         for sc in ['green', 'blue', 'red']: self.combo_spill.addItem(sc.capitalize(), sc)
         spill_row.addWidget(self.combo_spill); cl.addLayout(spill_row)
-        cl.addSpacing(4)
 
         w6, self.sl_shadow, _ = make_slider("Shadow Preserve", 0, 100, 0, "%"); cl.addWidget(w6)
-        cl.addSpacing(4)
 
         bg_row = QHBoxLayout(); bg_row.addWidget(QLabel("Background"))
         self.combo_bg = QComboBox()
@@ -1875,16 +1974,16 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(self.lbl_res_suggest)
 
         # Actions
-        act_row = QHBoxLayout()
+        act_row = QHBoxLayout(); act_row.setSpacing(4)
         self.btn_preview = QPushButton("Preview"); self.btn_preview.setObjectName("secondary")
-        self.btn_preview.setEnabled(False); self.btn_preview.setMinimumHeight(36)
+        self.btn_preview.setEnabled(False); self.btn_preview.setMinimumHeight(30)
         self.btn_preview.clicked.connect(self._preview_frame); act_row.addWidget(self.btn_preview)
         self.btn_benchmark = QPushButton("Benchmark"); self.btn_benchmark.setObjectName("secondary")
-        self.btn_benchmark.setEnabled(False); self.btn_benchmark.setMinimumHeight(36)
+        self.btn_benchmark.setEnabled(False); self.btn_benchmark.setMinimumHeight(30)
         self.btn_benchmark.clicked.connect(self._run_benchmark); act_row.addWidget(self.btn_benchmark)
         ll.addLayout(act_row)
         self.btn_start = QPushButton("Start Processing"); self.btn_start.setEnabled(False)
-        self.btn_start.setMinimumHeight(44); self.btn_start.setStyleSheet("font-size: 14px;")
+        self.btn_start.setMinimumHeight(36); self.btn_start.setStyleSheet("font-size: 13px;")
         self.btn_start.clicked.connect(self._start); ll.addWidget(self.btn_start)
         self.btn_cancel = QPushButton("Cancel"); self.btn_cancel.setObjectName("danger")
         self.btn_cancel.setVisible(False); self.btn_cancel.clicked.connect(self._cancel); ll.addWidget(self.btn_cancel)
@@ -1919,7 +2018,8 @@ class AlphaCutWindow(QMainWindow):
 
         grp_prog = QGroupBox("PROGRESS"); prl = QVBoxLayout(grp_prog); prl.setSpacing(6)
         self.lbl_status = QLabel("Ready"); prl.addWidget(self.lbl_status)
-        self.progress_bar = QProgressBar(); self.progress_bar.setRange(0, 100); prl.addWidget(self.progress_bar)
+        self.progress_bar = QProgressBar(); self.progress_bar.setRange(0, 100)
+        self.progress_bar.setFormat("%p%"); prl.addWidget(self.progress_bar)
         prog_row = QHBoxLayout()
         self.lbl_frame = QLabel(""); self.lbl_frame.setObjectName("subtitle"); prog_row.addWidget(self.lbl_frame)
         self.lbl_memory = QLabel(""); self.lbl_memory.setObjectName("subtitle"); prog_row.addWidget(self.lbl_memory)
@@ -1930,28 +2030,20 @@ class AlphaCutWindow(QMainWindow):
         self.log_view = QTextEdit(); self.log_view.setReadOnly(True); self.log_view.setMaximumHeight(130)
         lgl.addWidget(self.log_view); rl.addWidget(grp_log, stretch=1)
 
-        # Wrap left panel in scroll area to prevent crushing on small screens
-        left_scroll = QScrollArea()
-        left_scroll.setWidget(left)
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setFixedWidth(430)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-
-        # Prevent scroll-wheel from changing settings — scroll the panel instead
+        # Prevent scroll-wheel from changing settings — requires click-to-focus
         self._no_scroll = NoScrollFilter(self)
         for widget in left.findChildren((QComboBox, QSlider, QSpinBox)):
             widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             widget.installEventFilter(self._no_scroll)
 
-        root.addWidget(left_scroll); root.addWidget(right, stretch=1)
+        root.addWidget(left); root.addWidget(right, stretch=1)
         self._toast = ToastWidget(central)
         self._glow_timer = QTimer(self); self._glow_timer.setInterval(80); self._glow_phase = 0.0
         self._glow_timer.timeout.connect(self._animate_progress)
 
     # ── Helpers ──
     def _stat(self, val, label):
-        w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(8,6,8,6); lay.setSpacing(2)
+        w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(6,4,6,4); lay.setSpacing(1)
         v = QLabel(val); v.setObjectName("statValue"); v.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(v)
         l = QLabel(label); l.setObjectName("statLabel"); l.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(l)
         w.setStyleSheet("background: #0f1118; border-radius: 8px;"); w._val = v; return w
@@ -2128,6 +2220,7 @@ class AlphaCutWindow(QMainWindow):
             'invert_mask': self.chk_invert.isChecked(), 'spill_strength': self.sl_spill.value(),
             'spill_color_index': self.combo_spill.currentIndex(),
             'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex(),
+            'quality': self.sl_quality.value(),
         }
         save_presets(presets); self._refresh_presets(); self._toast_msg(f"Preset saved: {name.strip()}")
 
@@ -2150,6 +2243,7 @@ class AlphaCutWindow(QMainWindow):
         if 'spill_color_index' in p: self.combo_spill.setCurrentIndex(min(p['spill_color_index'], self.combo_spill.count()-1))
         if 'shadow_strength' in p: self.sl_shadow.setValue(p['shadow_strength'])
         if 'bg_index' in p: self.combo_bg.setCurrentIndex(min(p['bg_index'], self.combo_bg.count()-1))
+        if 'quality' in p: self.sl_quality.setValue(p['quality'])
         self._toast_msg(f"Loaded: {name}")
 
     # ── Settings ──
@@ -2169,6 +2263,7 @@ class AlphaCutWindow(QMainWindow):
         if 'spill_color_index' in s: self.combo_spill.setCurrentIndex(min(s['spill_color_index'], self.combo_spill.count()-1))
         if 'shadow_strength' in s: self.sl_shadow.setValue(s['shadow_strength'])
         if 'bg_index' in s: self.combo_bg.setCurrentIndex(min(s['bg_index'], self.combo_bg.count()-1))
+        if 'quality' in s: self.sl_quality.setValue(s['quality'])
 
     def _save_settings(self):
         s = load_settings()
@@ -2179,7 +2274,8 @@ class AlphaCutWindow(QMainWindow):
             'frame_skip': self.sl_frame_skip.value(),
             'invert_mask': self.chk_invert.isChecked(), 'spill_strength': self.sl_spill.value(),
             'spill_color_index': self.combo_spill.currentIndex(),
-            'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex()})
+            'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex(),
+            'quality': self.sl_quality.value()})
         save_settings(s)
 
     # ── Input ──
@@ -2298,7 +2394,7 @@ class AlphaCutWindow(QMainWindow):
             self._start_single(model_key, fmt, pattern)
 
     def _start_single(self, model_key, fmt, pattern):
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
         if fmt == 'png_seq':
             out = QFileDialog.getExistingDirectory(self, "Select Output Folder")
             if not out: return
@@ -2325,7 +2421,8 @@ class AlphaCutWindow(QMainWindow):
             frame_skip=self.sl_frame_skip.value(),
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
-            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'])
+            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
+            quality=self.sl_quality.value())
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.progress.connect(self._update_tray_progress)
         self._worker.frame_info.connect(lambda c, t: self.lbl_frame.setText(f"Frame {c} / {t}"))
@@ -2349,6 +2446,7 @@ class AlphaCutWindow(QMainWindow):
                          'max_res': self.spin_res.value(), 'edge': self.sl_edge.value(),
                          'shift': self.sl_shift.value(), 'temporal': self.sl_temporal.value(),
                          'audio': self.chk_audio.isChecked(), 'frame_skip': self.sl_frame_skip.value(),
+                         'quality': self.sl_quality.value(),
                          **comp})
         self._begin_processing()
         self._batch_worker = BatchWorker(jobs)
@@ -2368,6 +2466,7 @@ class AlphaCutWindow(QMainWindow):
         self.btn_start.setEnabled(False); self.btn_preview.setEnabled(False)
         self.btn_benchmark.setEnabled(False); self.btn_cancel.setVisible(True)
         self.progress_bar.setValue(0); self._start_glow()
+        self.lbl_status.setText("Starting..."); self.lbl_frame.setText("")
         self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False)
         if self._tray: self._tray.show(); self._tray.setToolTip(f"{APP_NAME} — Processing...")
 
@@ -2479,7 +2578,7 @@ def run_cli(args):
             frame_skip=args.frame_skip, invert_mask=args.invert,
             spill_strength=args.spill, spill_color=args.spill_color,
             shadow_strength=args.shadow, bg_color=bg_color,
-            bg_image_path=args.bg_image)
+            bg_image_path=args.bg_image, quality=args.quality)
         worker.log.connect(print)
         worker.status.connect(lambda s: print(f"  {s}"))
         worker.progress.connect(lambda p: print(f"  {p}%", end='\r') if p % 10 == 0 else None)
@@ -2499,7 +2598,8 @@ def main():
     parser.add_argument('--input', '-i', nargs='+', help='Input video file(s)')
     parser.add_argument('--output', '-o', help='Output file path (single file mode)')
     parser.add_argument('--model', '-m', default='u2net_human_seg', help='Model name (partial match)')
-    parser.add_argument('--format', '-f', default='prores', choices=list(OUTPUT_FORMATS.values()), help='Output format')
+    parser.add_argument('--format', '-f', default='mp4', choices=list(OUTPUT_FORMATS.values()), help='Output format')
+    parser.add_argument('--quality', '-q', type=int, default=70, help='Output quality 0-100 (0=smallest, 100=best)')
     parser.add_argument('--max-res', type=int, default=0, help='Max resolution (0=original)')
     parser.add_argument('--edge', type=int, default=0, help='Edge softness (0-100)')
     parser.add_argument('--shift', type=int, default=0, help='Mask shift (-20 to +20)')
