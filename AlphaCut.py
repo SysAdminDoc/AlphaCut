@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.0.1 — AI Video Background Removal
+AlphaCut v1.2.0 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -10,7 +10,7 @@ MIT License — Copyright (c) 2025-2026 SysAdminDoc
 https://github.com/SysAdminDoc/AlphaCut
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -192,6 +192,7 @@ OUTPUT_FORMATS = {
     "MP4 H.264 (.mp4) — Smallest": "mp4",
     "WebM VP9 + Alpha (.webm)": "webm",
     "Animated WebP (.webp) — Short Clips": "webp_anim",
+    "Animated GIF (.gif) — Web Compatible": "gif_anim",
     "MP4 + Green Screen (.mp4)": "greenscreen",
     "ProRes 4444 + Alpha (.mov)": "prores",
     "Matte Only — Grayscale (.mov)": "matte",
@@ -285,7 +286,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp'}
+    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif'}
     ext = ext_map.get(fmt, '.mov')
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
@@ -382,6 +383,30 @@ def _compute_sha256(path):
         for chunk in iter(lambda: f.read(1 << 20), b''):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _rgba_to_gif_frame(rgba_img):
+    """Convert an RGBA PIL image to P-mode with binary transparency for GIF.
+
+    GIF supports only 256 colours and 1-bit (on/off) transparency.  We
+    quantise the RGB content to 255 colours and assign palette index 255 as
+    the transparent slot so that pixels with alpha < 128 become transparent.
+    """
+    rgba = rgba_img.convert('RGBA')
+    rgb_q = rgba.convert('RGB').quantize(colors=255, method=0, dither=0)
+    pal = list(rgb_q.getpalette() or [])
+    # Pad palette to 256 entries and reserve index 255 for transparency
+    while len(pal) < 256 * 3:
+        pal.extend([0, 0, 0])
+    pal[255 * 3: 255 * 3 + 3] = [0, 0, 0]
+    rgb_q.putpalette(pal)
+    arr_p = np.array(rgb_q, dtype=np.uint8)
+    arr_a = np.array(rgba.split()[3], dtype=np.uint8)
+    arr_p[arr_a < 128] = 255
+    frame = Image.fromarray(arr_p, 'P')
+    frame.putpalette(pal)
+    frame.info['transparency'] = 255
+    return frame
 
 
 class AlphaCutEngine:
@@ -591,6 +616,89 @@ def get_engine(model_key, log_fn=None):
         _engine_cache['key'] = model_key; _engine_cache['engine'] = eng; return eng
 
 
+def detect_chroma_background(video_path):
+    """Sample three frames and test corner patches for green/blue dominance.
+
+    Returns a dict  {'color': 'green'|'blue', 'similarity': float, 'blend': float}
+    when a solid-colour background is detected, or *None* otherwise.
+    """
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        return None
+    info = get_video_info(video_path)
+    if not info:
+        return None
+    duration = info.get('duration', 0)
+    if duration < 0.1:
+        return None
+
+    green_hits = 0
+    blue_hits = 0
+    total = 0
+
+    for frac in (0.25, 0.50, 0.75):
+        t = duration * frac
+        cmd = [ffmpeg, '-ss', f'{t:.3f}', '-i', video_path,
+               '-frames:v', '1', '-vf', 'scale=100:100',
+               '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
+               '-loglevel', 'quiet']
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=15)
+            raw = proc.stdout
+            if len(raw) < 100 * 100 * 3:
+                continue
+            arr = np.frombuffer(raw, dtype=np.uint8).reshape(100, 100, 3)
+        except Exception:
+            continue
+
+        # Sample four 10x10 corner patches
+        corners = [
+            arr[0:10,   0:10],   # top-left
+            arr[0:10,  90:100],  # top-right
+            arr[90:100, 0:10],   # bottom-left
+            arr[90:100, 90:100], # bottom-right
+        ]
+        for patch in corners:
+            r = int(patch[:, :, 0].mean())
+            g = int(patch[:, :, 1].mean())
+            b = int(patch[:, :, 2].mean())
+            total += 1
+            if g > 80 and g > r * 1.3 and g > b * 1.3:
+                green_hits += 1
+            elif b > 80 and b > r * 1.3 and b > g * 1.2:
+                blue_hits += 1
+
+    if total == 0:
+        return None
+    threshold = total * 0.6
+    if green_hits >= threshold:
+        return {'color': 'green', 'similarity': 0.35, 'blend': 0.05}
+    if blue_hits >= threshold:
+        return {'color': 'blue', 'similarity': 0.35, 'blend': 0.05}
+    return None
+
+
+class ChromaDetectWorker(QThread):
+    """Run detect_chroma_background() off the GUI thread."""
+    result = pyqtSignal(object)  # dict or None
+
+    def __init__(self, video_path, parent=None):
+        super().__init__(parent)
+        self.video_path = video_path
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        if self._cancelled:
+            self.result.emit(None)
+            return
+        res = detect_chroma_background(self.video_path)
+        if not self._cancelled:
+            self.result.emit(res)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FFMPEG UTILITIES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -638,7 +746,7 @@ def get_video_info(filepath):
 def estimate_output_size(info, fmt):
     if not info: return 0
     px = info['width'] * info['height']; frames = info['total_frames']
-    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'webp_anim': px*0.12}
+    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
 def pil_to_qimage(pil_img):
@@ -1162,6 +1270,37 @@ class ProcessingWorker(QThread):
             self.progress.emit(100)
             return out_file
 
+        if fmt == 'gif_anim':
+            tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
+            if not tiff_files:
+                self.error.emit("No frames found for animated GIF."); return None
+            n = len(tiff_files)
+            out_file = os.path.splitext(self.output_path)[0] + '.gif'
+            if n > 150:
+                self.log.emit(f"INFO: Animated GIF with {n} frames — GIF is limited to 256 colours; consider WebM VP9+Alpha for longer clips.")
+            self.status.emit("Building animated GIF...")
+            frames_gif = []
+            for i, f in enumerate(tiff_files):
+                try:
+                    img = Image.open(f); img.load()
+                    frames_gif.append(_rgba_to_gif_frame(img.convert('RGBA')))
+                except Exception as e:
+                    self.log.emit(f"Frame {i} skipped: {e}")
+                if i % 30 == 0 or i == n - 1:
+                    pct = 90 + int(((i + 1) / n) * 9)
+                    self.progress.emit(pct)
+                    self.status.emit(f"Building animated GIF {i+1}/{n}")
+                if self._cancelled: return None
+            if not frames_gif:
+                self.error.emit("No valid frames for animated GIF."); return None
+            duration_ms = max(1, int(1000 / fps))
+            self.status.emit("Saving animated GIF...")
+            frames_gif[0].save(
+                out_file, save_all=True, append_images=frames_gif[1:],
+                duration=duration_ms, loop=0, disposal=2, optimize=False)
+            self.progress.emit(100)
+            return out_file
+
         first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
         ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
@@ -1201,7 +1340,7 @@ class ProcessingWorker(QThread):
                    '-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le']
         else: self.error.emit(f"Unknown format: {fmt}"); return None
 
-        if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte', 'webp_anim'):
+        if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte', 'webp_anim', 'gif_anim'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
                     '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4') else 'copy'), '-shortest']
         # Add -progress pipe:1 for real-time encode progress
@@ -1293,7 +1432,7 @@ class BatchWorker(QThread):
                 else:
                     # Check if output exists
                     out = job['output']
-                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp'}
+                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif'}
                     if job['format'] != 'png_seq':
                         out = os.path.splitext(out)[0] + ext_map.get(job['format'], '.mov')
                     if os.path.exists(out):
@@ -1305,6 +1444,183 @@ class BatchWorker(QThread):
                 self.job_error.emit(i, str(e))
 
         self.all_done.emit(completed, len(self.jobs))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHROMA KEY WORKER
+# ═══════════════════════════════════════════════════════════════════════════════
+class ChromaKeyWorker(QThread):
+    """FFmpeg-based chroma-key removal — faster than AI for solid-colour backgrounds."""
+    progress = pyqtSignal(int)
+    status   = pyqtSignal(str)
+    log      = pyqtSignal(str)
+    error    = pyqtSignal(str)
+    finished = pyqtSignal(object)   # output_path or None
+
+    def __init__(self, input_path, output_path, fmt, chroma_color,
+                 similarity, blend, quality=75, keep_audio=True, parent=None):
+        super().__init__(parent)
+        self.input_path   = input_path
+        self.output_path  = output_path
+        self.fmt          = fmt
+        self.chroma_color = chroma_color   # 'green' or 'blue'
+        self.similarity   = similarity
+        self.blend        = blend
+        self.quality      = quality
+        self.keep_audio   = keep_audio
+        self._cancelled   = False
+        self._proc        = None
+
+    def cancel(self):
+        self._cancelled = True
+        if self._proc is not None:
+            try: self._proc.terminate()
+            except Exception: pass
+
+    def run(self):
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            self.error.emit("FFmpeg not found."); self.finished.emit(None); return
+
+        info = get_video_info(self.input_path)
+        if not info:
+            self.error.emit("Could not probe video."); self.finished.emit(None); return
+
+        fps      = info.get('fps', 25.0)
+        duration = info.get('duration', 0.0)
+        q        = max(0, min(100, self.quality))
+
+        fmt = self.fmt
+        chroma_filter = (f"chromakey=color={self.chroma_color}:"
+                         f"similarity={self.similarity:.3f}:blend={self.blend:.3f}")
+
+        # Build output path with correct extension
+        _ext_map = {'mp4': '.mp4', 'webm': '.webm', 'prores': '.mov',
+                    'matte': '.mov', 'png_seq': '', 'gif_anim': '.gif',
+                    'webp_anim': '.webp'}
+        out = os.path.splitext(self.output_path)[0] + _ext_map.get(fmt, '.mov')
+
+        self.status.emit(f"Chroma-key removal ({self.chroma_color}) → {fmt}…")
+
+        if fmt == 'png_seq':
+            out_dir = os.path.splitext(self.output_path)[0] + '_frames'
+            os.makedirs(out_dir, exist_ok=True)
+            frame_pattern = os.path.join(out_dir, 'frame_%06d.png')
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', chroma_filter,
+                   '-pix_fmt', 'rgba', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   frame_pattern]
+            out = out_dir
+        elif fmt == 'webm':
+            crf = int(45 - (q / 100) * 30)
+            vf  = f'{chroma_filter},format=yuva420p'
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', vf,
+                   '-c:v', 'libvpx-vp9', '-crf', str(crf), '-b:v', '0',
+                   '-auto-alt-ref', '0', '-pix_fmt', 'yuva420p', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'prores':
+            bpm = int(800 + (q / 100) ** 1.5 * 7200)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', chroma_filter,
+                   '-c:v', 'prores_ks', '-profile:v', '4444',
+                   '-vendor', 'apl0', '-pix_fmt', 'yuva444p10le',
+                   '-b:v', f'{bpm}k', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'matte':
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},lutrgb=r=0:g=0:b=0,alphaextract',
+                   '-c:v', 'prores_ks', '-profile:v', '4444', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        else:  # mp4 default
+            crf = int(32 - (q / 100) * 18)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'libx264', '-preset', 'fast', '-crf', str(crf),
+                   '-movflags', '+faststart', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+
+        # Append audio stream if appropriate
+        if (self.keep_audio and info.get('has_audio')
+                and fmt not in ('png_seq', 'matte')):
+            cmd.insert(-1, '-c:a'); cmd.insert(-1, 'aac')
+
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='replace')
+            total_frames = max(1, int(duration * fps))
+            current_frame = 0
+            for line in self._proc.stdout:
+                if self._cancelled:
+                    break
+                line = line.strip()
+                if line.startswith('frame='):
+                    try: current_frame = int(line.split('=')[1])
+                    except ValueError: pass
+                    pct = min(99, int((current_frame / total_frames) * 100))
+                    self.progress.emit(pct)
+                elif '=' not in line and line:
+                    self.log.emit(line)
+            self._proc.wait()
+            rc = self._proc.returncode
+        except Exception as e:
+            self.error.emit(f"Chroma-key failed: {e}"); self.finished.emit(None); return
+
+        if self._cancelled:
+            try:
+                if os.path.isfile(out): os.remove(out)
+            except Exception: pass
+            self.finished.emit(None); return
+
+        if rc != 0:
+            self.error.emit(f"FFmpeg exited {rc} during chroma-key."); self.finished.emit(None); return
+
+        self.progress.emit(100)
+        self.finished.emit(out)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# THUMBNAIL LOADER
+# ═══════════════════════════════════════════════════════════════════════════════
+class ThumbnailLoader(QThread):
+    """Extract small preview thumbnails from video files in a background thread."""
+    thumbnail_ready = pyqtSignal(int, object)   # (row, QPixmap)
+
+    def __init__(self, jobs, parent=None):
+        """*jobs* is a list of (row, video_path) tuples."""
+        super().__init__(parent)
+        self._jobs      = list(jobs)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            return
+        for row, path in self._jobs:
+            if self._cancelled:
+                break
+            try:
+                cmd = [ffmpeg, '-ss', '0.5', '-i', path,
+                       '-frames:v', '1', '-vf', 'scale=80:-1',
+                       '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
+                       '-loglevel', 'quiet']
+                proc = subprocess.run(cmd, capture_output=True, timeout=10)
+                if proc.returncode == 0 and proc.stdout:
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(proc.stdout)
+                    if not pixmap.isNull():
+                        self.thumbnail_ready.emit(row, pixmap)
+            except Exception:
+                pass   # No thumbnail is not fatal
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1630,30 +1946,62 @@ class ToastWidget(QLabel):
 
 
 class JobTable(QTableWidget):
-    """Batch job queue table."""
+    """Batch job queue table with thumbnail previews."""
+    # Column indices
+    COL_THUMB    = 0
+    COL_FILE     = 1
+    COL_STATUS   = 2
+    COL_PROGRESS = 3
+    COL_OUTPUT   = 4
+
     def __init__(self):
-        super().__init__(0, 4)
-        self.setHorizontalHeaderLabels(["File", "Status", "Progress", "Output"])
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        super().__init__(0, 5)
+        self.setHorizontalHeaderLabels(["", "File", "Status", "Progress", "Output"])
+        self.horizontalHeader().setSectionResizeMode(self.COL_THUMB,    QHeaderView.ResizeMode.Fixed)
+        self.horizontalHeader().setSectionResizeMode(self.COL_FILE,     QHeaderView.ResizeMode.Stretch)
+        self.horizontalHeader().setSectionResizeMode(self.COL_STATUS,   QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setSectionResizeMode(self.COL_PROGRESS, QHeaderView.ResizeMode.ResizeToContents)
+        self.horizontalHeader().setSectionResizeMode(self.COL_OUTPUT,   QHeaderView.ResizeMode.Stretch)
+        self.horizontalHeader().resizeSection(self.COL_THUMB, 88)
         self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(52)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.setMaximumHeight(180)
+        self.setMaximumHeight(260)
 
     def add_job(self, filename):
         row = self.rowCount(); self.insertRow(row)
-        self.setItem(row, 0, QTableWidgetItem(filename))
-        self.setItem(row, 1, QTableWidgetItem("Queued"))
-        self.setItem(row, 2, QTableWidgetItem("0%"))
-        self.setItem(row, 3, QTableWidgetItem("--"))
+        # Placeholder thumbnail cell
+        thumb_lbl = QLabel(); thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb_lbl.setStyleSheet("background: transparent;")
+        self.setCellWidget(row, self.COL_THUMB, thumb_lbl)
+        self.setItem(row, self.COL_FILE,     QTableWidgetItem(filename))
+        self.setItem(row, self.COL_STATUS,   QTableWidgetItem("Queued"))
+        self.setItem(row, self.COL_PROGRESS, QTableWidgetItem("0%"))
+        self.setItem(row, self.COL_OUTPUT,   QTableWidgetItem("--"))
         return row
 
-    def update_status(self, row, status): self.item(row, 1).setText(status)
-    def update_progress(self, row, pct): self.item(row, 2).setText(f"{pct}%")
-    def update_output(self, row, path): self.item(row, 3).setText(os.path.basename(path))
+    def set_thumbnail(self, row, pixmap):
+        """Attach a scaled thumbnail to the thumb column of *row*."""
+        lbl = self.cellWidget(row, self.COL_THUMB)
+        if lbl is None:
+            lbl = QLabel(); lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("background: transparent;")
+            self.setCellWidget(row, self.COL_THUMB, lbl)
+        scaled = pixmap.scaledToHeight(48, Qt.TransformationMode.SmoothTransformation)
+        lbl.setPixmap(scaled)
+
+    def update_status(self, row, status):
+        item = self.item(row, self.COL_STATUS)
+        if item: item.setText(status)
+
+    def update_progress(self, row, pct):
+        item = self.item(row, self.COL_PROGRESS)
+        if item: item.setText(f"{pct}%")
+
+    def update_output(self, row, path):
+        item = self.item(row, self.COL_OUTPUT)
+        if item: item.setText(os.path.basename(path))
 
     def clear_all(self):
         self.setRowCount(0)
@@ -1875,6 +2223,8 @@ class AlphaCutWindow(QMainWindow):
         self._last_output = None; self._batch_jobs = []
         self._bg_custom_color = None; self._bg_image_path = None
         self._update_checker = None
+        self._chroma_result = None; self._chroma_detect_worker = None
+        self._thumbnail_loader = None
         self._build_menu_bar(); self._build_ui(); self._setup_tray()
         self._check_ffmpeg(); self._load_settings()
         # Auto-check for updates on startup (silent)
@@ -2024,6 +2374,12 @@ class AlphaCutWindow(QMainWindow):
         bg_row.addWidget(self.combo_bg, stretch=1); cl.addLayout(bg_row)
 
         self.lbl_bg_info = QLabel(""); self.lbl_bg_info.setObjectName("subtitle"); cl.addWidget(self.lbl_bg_info)
+
+        # Chroma-key detection hint + checkbox (hidden until detection runs)
+        self.lbl_chroma_hint = QLabel(""); self.lbl_chroma_hint.setObjectName("subtitle")
+        self.lbl_chroma_hint.setWordWrap(True); self.lbl_chroma_hint.setVisible(False); cl.addWidget(self.lbl_chroma_hint)
+        self.chk_use_chroma = QCheckBox("Use chroma-key (faster, better edges)")
+        self.chk_use_chroma.setVisible(False); cl.addWidget(self.chk_use_chroma)
 
         ll.addWidget(grp_comp)
 
@@ -2372,6 +2728,14 @@ class AlphaCutWindow(QMainWindow):
         self.drop_zone.setText(os.path.basename(path))
         self.progress_bar.setValue(0); self.lbl_frame.setText("")
         self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False)
+        # Reset chroma state
+        self._chroma_result = None
+        self.lbl_chroma_hint.setVisible(False); self.chk_use_chroma.setVisible(False)
+        self.chk_use_chroma.setChecked(False)
+        if self._chroma_detect_worker:
+            self._chroma_detect_worker.cancel()
+            self._chroma_detect_worker.wait()
+            self._chroma_detect_worker = None
         info = get_video_info(path); self._video_info = info
         if info:
             self.s_res._val.setText(f"{info['width']}x{info['height']}")
@@ -2380,6 +2744,10 @@ class AlphaCutWindow(QMainWindow):
             self._update_estimate()
             self.chk_audio.setEnabled(info.get('has_audio', False))
             if not info.get('has_audio'): self.chk_audio.setChecked(False)
+            # Start chroma-key detection in background
+            self._chroma_detect_worker = ChromaDetectWorker(path)
+            self._chroma_detect_worker.result.connect(self._chroma_detected)
+            self._chroma_detect_worker.start()
         else: self.info_w.setVisible(False)
         self.btn_start.setEnabled(True); self.btn_preview.setEnabled(True)
         self.btn_benchmark.setEnabled(True); self.sl_scrub.setEnabled(True)
@@ -2398,13 +2766,23 @@ class AlphaCutWindow(QMainWindow):
         s['recent_files'] = recent[:20]
         save_settings(s)
         self.grp_batch.setVisible(True); self.job_table.clear_all()
-        for p in self._batch_jobs: self.job_table.add_job(os.path.basename(p))
+        for i, p in enumerate(self._batch_jobs):
+            self.job_table.add_job(os.path.basename(p))
         self.drop_zone.setText(f"{len(self._batch_jobs)} videos queued")
         self._log(f"\nBatch loaded: {len(self._batch_jobs)} videos")
         self.lbl_status.setText(f"Batch: {len(self._batch_jobs)} videos")
         self.info_w.setVisible(False)
         self.btn_start.setEnabled(True); self.btn_start.setText(f"Start Batch ({len(self._batch_jobs)})")
         self.btn_preview.setEnabled(True); self.btn_benchmark.setEnabled(True); self.sl_scrub.setEnabled(True)
+        # Start thumbnail loader
+        if self._thumbnail_loader:
+            self._thumbnail_loader.cancel()
+            self._thumbnail_loader.wait()
+        jobs = [(i, p) for i, p in enumerate(self._batch_jobs)]
+        self._thumbnail_loader = ThumbnailLoader(jobs)
+        self._thumbnail_loader.thumbnail_ready.connect(
+            lambda row, pixmap: self.job_table.set_thumbnail(row, pixmap))
+        self._thumbnail_loader.start()
 
     def _update_estimate(self):
         if not self._video_info: return
@@ -2440,6 +2818,19 @@ class AlphaCutWindow(QMainWindow):
         self.btn_preview.setEnabled(True); self.btn_preview.setText("Preview")
         self._log(f"Preview error: {msg}"); self._toast_msg("Preview failed")
 
+    def _chroma_detected(self, result):
+        """Handle chroma-key detection result."""
+        self._chroma_result = result
+        if result:
+            color = result.get('color', 'green').capitalize()
+            hint = f"Detected {color}-screen background. Chroma-key is faster & better for synthetic backgrounds."
+            self.lbl_chroma_hint.setText(hint)
+            self.lbl_chroma_hint.setVisible(True)
+            self.chk_use_chroma.setVisible(True)
+        else:
+            self.lbl_chroma_hint.setVisible(False)
+            self.chk_use_chroma.setVisible(False)
+
     # ── Processing ──
     def _start(self):
         if not self._input_path or not find_ffmpeg(): return
@@ -2454,7 +2845,7 @@ class AlphaCutWindow(QMainWindow):
             self._start_single(model_key, fmt, pattern)
 
     def _start_single(self, model_key, fmt, pattern):
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif'}
         if fmt == 'png_seq':
             out = QFileDialog.getExistingDirectory(self, "Select Output Folder")
             if not out: return
@@ -2473,6 +2864,26 @@ class AlphaCutWindow(QMainWindow):
                     self._log(f"WARNING: Low disk space! Need ~{est_mb*2.5:.0f} MB, have {free_mb:.0f} MB")
             except Exception: pass
         self._begin_processing()
+        
+        # Check if chroma-key should be used instead of AI
+        if (self.chk_use_chroma.isVisible() and self.chk_use_chroma.isChecked() 
+                and self._chroma_result):
+            self._worker = ChromaKeyWorker(
+                self._input_path, out, fmt,
+                self._chroma_result['color'],
+                self._chroma_result['similarity'],
+                self._chroma_result['blend'],
+                quality=self.sl_quality.value(),
+                keep_audio=self.chk_audio.isChecked())
+            self._worker.progress.connect(self.progress_bar.setValue)
+            self._worker.progress.connect(self._update_tray_progress)
+            self._worker.status.connect(self.lbl_status.setText)
+            self._worker.log.connect(self._log)
+            self._worker.finished.connect(self._done)
+            self._worker.error.connect(self._err)
+            self._worker.start()
+            return
+        
         comp = self._get_compositing_params()
         self._worker = ProcessingWorker(
             self._input_path, out, model_key, fmt, self.spin_res.value(),
@@ -2531,7 +2942,7 @@ class AlphaCutWindow(QMainWindow):
         if self._tray: self._tray.show(); self._tray.setToolTip(f"{APP_NAME} — Processing...")
 
     def _cancel(self):
-        for w in [self._worker, self._batch_worker]:
+        for w in [self._worker, self._batch_worker, self._chroma_detect_worker, self._thumbnail_loader]:
             if w and w.isRunning(): w.cancel(); w.quit(); w.wait(5000)
         self._reset(); self.lbl_status.setText("Cancelled"); self._toast_msg("Cancelled")
 
@@ -2614,6 +3025,15 @@ def run_cli(args):
         print(f"  Format: {fmt}")
         print(f"  Output: {out}")
 
+        # Auto-detect or use --chroma-key flag
+        chroma_result = None
+        if args.chroma_key:
+            chroma_result = detect_chroma_background(inp)
+            if chroma_result:
+                print(f"  Chroma-key detected: {chroma_result['color']}-screen")
+            else:
+                print(f"  --chroma-key set but no solid background detected; using AI")
+
         # Parse bg_color
         bg_color = None
         if args.bg_color:
@@ -2623,6 +3043,19 @@ def run_cli(args):
                     bg_color = tuple(parts)
             except ValueError:
                 print(f"  Invalid --bg-color: {args.bg_color} (use R,G,B format)")
+
+        # Use chroma-key if detected
+        if chroma_result and (args.chroma_key or True):  # Auto-use if detected
+            worker = ChromaKeyWorker(
+                inp, out, fmt, chroma_result['color'],
+                chroma_result['similarity'], chroma_result['blend'],
+                quality=args.quality, keep_audio=args.audio)
+            worker.log.connect(print)
+            worker.status.connect(lambda s: print(f"  {s}"))
+            worker.progress.connect(lambda p: print(f"  {p}%", end='\r') if p % 10 == 0 else None)
+            worker.run()
+            print()
+            continue
 
         engine = get_engine(model_key, log_fn=print)
         engine.reset_temporal()
@@ -2673,6 +3106,7 @@ def main():
     parser.add_argument('--bg-color', help='Background color as R,G,B (e.g. 0,255,0)')
     parser.add_argument('--bg-image', help='Background image file path')
     parser.add_argument('--no-audio', action='store_true', help='Strip audio')
+    parser.add_argument('--chroma-key', action='store_true', help='Use FFmpeg chroma-key instead of AI (for green/blue screen footage)')
     parser.add_argument('--version', action='version', version=f'AlphaCut v{__version__}')
 
     args = parser.parse_args()
