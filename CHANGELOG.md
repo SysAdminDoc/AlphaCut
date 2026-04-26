@@ -2,6 +2,32 @@
 
 All notable changes to AlphaCut will be documented in this file.
 
+## [v1.2.0] - 2025-07-27
+
+### Added
+- **Animated GIF export** — new `gif_anim` output format; 256-colour palette with binary transparency mask, `disposal=2` for proper background restoration. Optimal for web compatibility and emoji-like short loops.
+- **Chroma-key auto-detection** — `detect_chroma_background()` samples 3 video frames, checks corner patches for green/blue dominance, returns detection result with similarity/blend parameters.
+- **ChromaDetectWorker** — background thread that runs detection without blocking the GUI; emits result signal on completion.
+- **ChromaKeyWorker** — FFmpeg-based chroma-key implementation with real-time progress parsing; supports mp4, webm, prores, matte, png_seq; 10× faster than AI for solid-colour backgrounds.
+- **Chroma-key UI** — hidden checkbox `Use chroma-key (faster, better edges)` shown only after detection confirms green/blue screen. Hint label displays detected color.
+- **Batch thumbnail previews** — `ThumbnailLoader` extracts 80px thumbnails from batch videos in background; integrated into JobTable as column 0.
+- **JobTable redesign** — 5-column table: thumbnail, file, status, progress, output. Thumbnail column displays frame at 0.5s with 48px height.
+- **CLI chroma-key support** — `--chroma-key` flag; auto-detection runs in CLI mode; if detected, uses `ChromaKeyWorker` instead of AI.
+
+### Fixed
+- Fixed docstring version (was v1.0.1, now v1.2.0).
+- Fixed audio exclusion logic to include `gif_anim`.
+- Updated all 4 `ext_map` dicts to include `'gif_anim': '.gif'`.
+- Updated `estimate_output_size` bpf to include GIF estimate (0.06× px).
+
+### Changed
+- Version bumped to `1.2.0` across all files.
+- Output formats list: 6 → 7 formats (added GIF).
+- Batch job table: 4 → 5 columns (thumbnail column added).
+- README updated to document chroma-key fallback feature.
+
+---
+
 ## [v1.1.0] - 2025-07-19
 
 ### Added
@@ -42,3 +68,4 @@ All notable changes to AlphaCut will be documented in this file.
 - Update checker (GitHub releases API).
 - Model Manager dialog (view/delete cached ONNX files).
 - PyQt6 dark theme, auto-installs all Python dependencies at startup.
+

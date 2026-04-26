@@ -1,10 +1,10 @@
-# AlphaCut v1.1.0
+# AlphaCut v1.2.0
 
 **Video background removal & compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
 
-![Version](https://img.shields.io/badge/Version-v1.1.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.2.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -15,7 +15,8 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 
 **AI & Processing**
 - 8 AI Models — U2Net, ISNet, BiRefNet — from fast drafts to cinema-quality edges
-- 6 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, Animated WebP, PNG sequences, green screen, grayscale matte
+- 7 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, Animated WebP, Animated GIF, PNG sequences, green screen, grayscale matte
+- Chroma-Key Fallback — auto-detect green/blue screens; FFmpeg chroma-key for 10x speed boost
 - Pipelined I/O — parallel decode/infer/save threads for higher throughput
 - Frame Skip — process every Nth frame with mask reuse (up to 10x speedup)
 - Benchmark Mode — test 10 samples to estimate total processing time
@@ -30,8 +31,8 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 
 **Batch & Workflow**
 - Batch Queue — drop multiple files or a folder, process sequentially
-- Job Table — per-file status, progress %, and output path
-- CLI Mode — full argparse interface for headless/scripted operation
+- Job Table — per-file thumbnails, status, progress %, and output path
+- CLI Mode — full argparse interface for headless/scripted operation (with auto chroma-key detection)
 - Auto-Naming — configurable output patterns ({name}, {model}, {format}, {date})
 - Export Presets — save/load all settings including compositing
 - Recent Files — last 20 files quick-access menu

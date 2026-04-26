@@ -6,6 +6,10 @@
 - [x] **Animated WebP / transparent export** — `webp_anim` format added; pure-Python PIL encode; RGBA transparency; quality slider; warns on > 300 frames. *(v1.1.0)*
 - [x] **SHA-256 model integrity verification** — `.sha256` sidecar written after download; verified on every load; auto-re-download on mismatch. *(v1.1.0)*
 - [x] **requirements.txt** — pinned dependencies for clean installs. *(v1.1.0)*
+- [x] **Animated GIF export** — `gif_anim` format with 256-colour palette + binary transparency; uses PIL `disposal=2` for proper restoration. *(v1.2.0)*
+- [x] **Built-in chroma-key fallback** — `detect_chroma_background()` auto-detects green/blue screens by corner-patch colour dominance; `ChromaDetectWorker` runs detection background; `ChromaKeyWorker` uses FFmpeg chroma-key filter for 10× speedup on synthetic backgrounds. *(v1.2.0)*
+- [x] **Batch thumbnail previews** — `ThumbnailLoader` extracts 80px thumbnails from batch videos; `JobTable` redesigned to 5 columns with thumbnail column. *(v1.2.0)*
+- [x] **CLI chroma-key support** — `--chroma-key` flag in argparse; auto-detects in headless mode. *(v1.2.0)*
 
 ## Future Ideas
 
@@ -15,6 +19,9 @@
 - [ ] Drag-out support (drag output file to NLE)
 - [ ] Localization scaffold (i18n-ready strings)
 - [ ] Thumbnail grid for batch preview
+- [ ] Virtual camera output (pyvirtualcam for OBS/Zoom live use)
+- [ ] FFmpeg-pipe RGB24 stdin mode (for scriptable pipelines)
+- [ ] MatAnyone foreground/alpha pair export (for NLEs without alpha support)
 
 ## Open-Source Research (Round 2)
 
@@ -34,8 +41,6 @@
 - **Temporal-coherent model path** (RVM) — add RVM as a 9th model for live/interview footage where U2Net flickers on hair/edges frame-to-frame.
 - **Interactive refine-mask brush** (Rembg-Fuse node graph) — manual one-frame brush fix that propagates via optical flow; addresses the "98% perfect, but this one leaf" problem.
 - **Optical-flow mask propagation** (RVM recurrent state) — when frame-skipping, blend masks via DIS optical flow instead of straight reuse so fast-moving edges don't lag.
-- **Built-in chroma-key fallback** (Ckrest/rvm-virtual-camera) — when a true green screen is present, a classical chroma key delivers better edges than any NN at a fraction of the cost; let the pipeline auto-detect a dominant green/blue background and offer it.
-- **Animated GIF export** — complement to WebP for broader browser/platform compatibility; note: lossy palette dither degrades alpha edges.
 - **ONNX + NCNN Vulkan dual backend** (RVM, rvm-virtual-camera) — ship the same model as NCNN for Vulkan users (Apple Silicon & AMD), avoiding CUDA-only lock-in.
 
 ### Patterns & Architectures Worth Studying
