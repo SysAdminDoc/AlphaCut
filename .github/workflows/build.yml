@@ -1,0 +1,85 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: AlphaCut-windows.exe
+            pyinstaller_flags: "--windowed"
+          - os: ubuntu-latest
+            artifact: AlphaCut-linux
+            pyinstaller_flags: ""
+          - os: macos-latest
+            artifact: AlphaCut-macos
+            pyinstaller_flags: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --onefile ${{ matrix.pyinstaller_flags }} \
+            --name AlphaCut \
+            --collect-all onnxruntime \
+            --collect-submodules scipy \
+            AlphaCut.py
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            mv dist/AlphaCut.exe dist/${{ matrix.artifact }}
+          else
+            mv dist/AlphaCut dist/${{ matrix.artifact }}
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: AlphaCut v${{ github.event.inputs.version }}
+          draft: false
+          prerelease: false
+          files: |
+            dist/AlphaCut-windows.exe
+            dist/AlphaCut-linux
+            dist/AlphaCut-macos

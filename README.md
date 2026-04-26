@@ -1,9 +1,10 @@
-# AlphaCut v1.0.0
+# AlphaCut v1.1.0
 
 **Video background removal & compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
 
+![Version](https://img.shields.io/badge/Version-v1.1.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -14,7 +15,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 
 **AI & Processing**
 - 8 AI Models — U2Net, ISNet, BiRefNet — from fast drafts to cinema-quality edges
-- 5 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, PNG sequences, green screen, grayscale matte
+- 6 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, Animated WebP, PNG sequences, green screen, grayscale matte
 - Pipelined I/O — parallel decode/infer/save threads for higher throughput
 - Frame Skip — process every Nth frame with mask reuse (up to 10x speedup)
 - Benchmark Mode — test 10 samples to estimate total processing time
@@ -82,7 +83,7 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 | `-i`, `--input` | — | Input video file(s) |
 | `-o`, `--output` | Auto-named | Output path |
 | `-m`, `--model` | `u2net_human_seg` | Model name (partial match) |
-| `-f`, `--format` | `prores` | prores, webm, png_seq, greenscreen, matte |
+| `-f`, `--format` | `mp4` | mp4, prores, webm, webp_anim, png_seq, greenscreen, matte |
 | `--max-res` | 0 (original) | Max resolution |
 | `--edge` | 0 | Edge softness (0-100) |
 | `--shift` | 0 | Mask shift (-20 to +20) |
@@ -112,12 +113,13 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 ## Architecture
 
 ```
-AlphaCut.py (single file, ~2,400 lines)
+AlphaCut.py (single file, ~2,650 lines)
 ├── Crash Handler + Bootstrap (auto-installs all deps)
 ├── AlphaCutEngine — ONNX inference + mask refinement
 │   ├── Edge refinement, temporal smoothing
 │   ├── Spill suppression, shadow preservation
 │   ├── Mask inversion, background compositing
+│   ├── SHA-256 model integrity verification
 │   └── Engine cache (singleton)
 ├── ProcessingWorker — Pipelined frame processing
 │   ├── Reader thread → AI inference → Saver thread
