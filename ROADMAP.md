@@ -1,13 +1,20 @@
 # AlphaCut — Development Roadmap
 
+## Completed
+
+- [x] **PyInstaller single-exe packaging** — `.github/workflows/build.yml`; 3-platform matrix (Windows exe, Linux binary, macOS binary); triggered via `workflow_dispatch`; artifacts uploaded to GitHub Release automatically. *(v1.1.0)*
+- [x] **Animated WebP / transparent export** — `webp_anim` format added; pure-Python PIL encode; RGBA transparency; quality slider; warns on > 300 frames. *(v1.1.0)*
+- [x] **SHA-256 model integrity verification** — `.sha256` sidecar written after download; verified on every load; auto-re-download on mismatch. *(v1.1.0)*
+- [x] **requirements.txt** — pinned dependencies for clean installs. *(v1.1.0)*
+
 ## Future Ideas
-- PyInstaller single-exe packaging
-- Inno Setup installer for Windows
-- ROI selection / manual mask painting
-- Multi-GPU support
-- Drag-out support (drag output file to NLE)
-- Localization scaffold (i18n-ready strings)
-- Thumbnail grid for batch preview
+
+- [ ] Inno Setup installer for Windows
+- [ ] ROI selection / manual mask painting
+- [ ] Multi-GPU support
+- [ ] Drag-out support (drag output file to NLE)
+- [ ] Localization scaffold (i18n-ready strings)
+- [ ] Thumbnail grid for batch preview
 
 ## Open-Source Research (Round 2)
 
@@ -20,18 +27,18 @@
 - **Shlok-crypto/Background-Remover-RealTime** — https://github.com/Shlok-crypto/Background-Remover-RealTime — Webcam replace+blur pipeline.
 - **sunwood-ai-labs/video-background-remover-cli** — https://github.com/Sunwood-ai-labs/video-background-remover-cli — rembg + OpenCV, exports transparent WebP/GIF and MatAnyone foreground+alpha pair.
 
-### Features to Borrow
+### Features to Consider Next
 - **Virtual camera output** (rvm-virtual-camera) — pipe the alpha composite to an OBS Virtual Camera endpoint on Windows (via `pyvirtualcam`) for live Zoom/Meet use; a huge distribution multiplier.
 - **FFmpeg-pipe RGB24 mode** (rembg) — accept `ffmpeg -i IN -f rawvideo -pix_fmt rgb24 - | alphacut --pipe` so long pipelines can fuse with upstream filters without disk I/O.
 - **MatAnyone foreground/alpha pair export** (video-background-remover-cli) — not just ProRes4444 — also export a separate foreground RGB video and a matte video so downstream NLEs without alpha-aware decoders still work.
 - **Temporal-coherent model path** (RVM) — add RVM as a 9th model for live/interview footage where U2Net flickers on hair/edges frame-to-frame.
-- **Animated WebP/GIF transparent export** (video-background-remover-cli) — single-file deliverable for web designers doing product-shot overlays; ~40% smaller than WebM/VP9 alpha for short loops.
 - **Interactive refine-mask brush** (Rembg-Fuse node graph) — manual one-frame brush fix that propagates via optical flow; addresses the "98% perfect, but this one leaf" problem.
 - **Optical-flow mask propagation** (RVM recurrent state) — when frame-skipping, blend masks via DIS optical flow instead of straight reuse so fast-moving edges don't lag.
 - **Built-in chroma-key fallback** (Ckrest/rvm-virtual-camera) — when a true green screen is present, a classical chroma key delivers better edges than any NN at a fraction of the cost; let the pipeline auto-detect a dominant green/blue background and offer it.
+- **Animated GIF export** — complement to WebP for broader browser/platform compatibility; note: lossy palette dither degrades alpha edges.
+- **ONNX + NCNN Vulkan dual backend** (RVM, rvm-virtual-camera) — ship the same model as NCNN for Vulkan users (Apple Silicon & AMD), avoiding CUDA-only lock-in.
 
 ### Patterns & Architectures Worth Studying
 - **Producer / matter / compositor triple-queue pipeline** (rembg FFmpeg-pipe mode) — already matches AlphaCut's pipelined I/O design; extending to a 4th "encoder" stage with bounded queues makes backpressure explicit.
-- **ONNX + NCNN Vulkan dual backend** (RVM, rvm-virtual-camera) — ship the same model as NCNN for Vulkan users (Apple Silicon & AMD), avoiding CUDA-only lock-in.
 - **Model-registry JSON with auto-download + SHA-256 verification** (rembg, nadermx/backgroundremover) — one `models.json` that declares name/url/hash/size/license, keeps the app small and lets users drop new models without rebuilding.
 - **Virtual-camera plugin on Windows via UnifiedCamera / pyvirtualcam** — reference pattern for exposing the alpha-composite feed as a webcam to other apps.
