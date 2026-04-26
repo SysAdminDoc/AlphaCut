@@ -10,9 +10,9 @@ MIT License — Copyright (c) 2025-2026 SysAdminDoc
 https://github.com/SysAdminDoc/AlphaCut
 """
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
-import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse
+import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
 import urllib.request, urllib.error
 from collections import deque
@@ -191,6 +191,7 @@ MODELS = {
 OUTPUT_FORMATS = {
     "MP4 H.264 (.mp4) — Smallest": "mp4",
     "WebM VP9 + Alpha (.webm)": "webm",
+    "Animated WebP (.webp) — Short Clips": "webp_anim",
     "MP4 + Green Screen (.mp4)": "greenscreen",
     "ProRes 4444 + Alpha (.mov)": "prores",
     "Matte Only — Grayscale (.mov)": "matte",
@@ -284,7 +285,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
+    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp'}
     ext = ext_map.get(fmt, '.mov')
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
@@ -374,6 +375,15 @@ QLineEdit { background-color: #13161d; color: #c8ccd4; border: 1px solid #1e2230
 # ═══════════════════════════════════════════════════════════════════════════════
 # AI ENGINE
 # ═══════════════════════════════════════════════════════════════════════════════
+def _compute_sha256(path):
+    """Return the hex SHA-256 digest of the file at *path*."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class AlphaCutEngine:
     def __init__(self, model_key, log_fn=None):
         self.config = MODELS[model_key]; self.model_key = model_key
@@ -527,8 +537,23 @@ class AlphaCutEngine:
     def _ensure_model(self):
         os.makedirs(MODELS_DIR, exist_ok=True)
         path = os.path.join(MODELS_DIR, self.config['file'])
+        sidecar = path + '.sha256'
+
         if os.path.isfile(path) and os.path.getsize(path) > 1_000_000:
-            self.log(f"Model cached: {self.config['file']}"); return path
+            # Verify stored hash if sidecar exists; recompute and save if not.
+            if os.path.isfile(sidecar):
+                stored = open(sidecar).read().strip()
+                actual = _compute_sha256(path)
+                if actual != stored:
+                    self.log(f"SHA-256 mismatch for {self.config['file']} — re-downloading...")
+                    os.remove(path); os.remove(sidecar)
+                else:
+                    self.log(f"Model verified: {self.config['file']} (sha256: {actual[:12]}…)"); return path
+            else:
+                digest = _compute_sha256(path)
+                open(sidecar, 'w').write(digest)
+                self.log(f"Model cached: {self.config['file']} (sha256: {digest[:12]}…)"); return path
+
         url = self.config['url']
         self.log(f"Downloading: {self.config['file']}...")
         try:
@@ -546,8 +571,10 @@ class AlphaCutEngine:
                             if pct >= last_pct + 10:
                                 last_pct = pct
                                 self.log(f"   {downloaded/(1024*1024):.1f}/{total/(1024*1024):.1f} MB ({pct}%)")
-                os.replace(tmp_path, path)
-                self.log(f"Model ready: {os.path.getsize(path)/(1024*1024):.1f} MB"); return path
+            os.replace(tmp_path, path)
+            digest = _compute_sha256(path)
+            open(sidecar, 'w').write(digest)
+            self.log(f"Model ready: {os.path.getsize(path)/(1024*1024):.1f} MB (sha256: {digest[:12]}…)"); return path
         except Exception as e:
             if os.path.exists(path + '.tmp'): os.remove(path + '.tmp')
             raise RuntimeError(f"Download failed: {e}")
@@ -611,7 +638,7 @@ def get_video_info(filepath):
 def estimate_output_size(info, fmt):
     if not info: return 0
     px = info['width'] * info['height']; frames = info['total_frames']
-    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08}
+    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'webp_anim': px*0.12}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
 def pil_to_qimage(pil_img):
@@ -1104,6 +1131,37 @@ class ProcessingWorker(QThread):
             self.progress.emit(100)
             return out_dir
 
+        if fmt == 'webp_anim':
+            tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
+            if not tiff_files:
+                self.error.emit("No frames found for animated WebP."); return None
+            n = len(tiff_files)
+            out_file = os.path.splitext(self.output_path)[0] + '.webp'
+            if n > 300:
+                self.log.emit(f"INFO: Animated WebP with {n} frames — large clips may use significant RAM. Consider WebM VP9+Alpha for videos > 10s.")
+            self.status.emit("Building animated WebP...")
+            frames_pil = []
+            for i, f in enumerate(tiff_files):
+                try:
+                    img = Image.open(f); img.load(); frames_pil.append(img.convert('RGBA'))
+                except Exception as e:
+                    self.log.emit(f"Frame {i} skipped: {e}")
+                if i % 30 == 0 or i == n - 1:
+                    pct = 90 + int(((i + 1) / n) * 9)
+                    self.progress.emit(pct)
+                    self.status.emit(f"Building animated WebP {i+1}/{n}")
+                if self._cancelled: return None
+            if not frames_pil:
+                self.error.emit("No valid frames for animated WebP."); return None
+            duration_ms = max(1, int(1000 / fps))
+            webp_q = max(1, min(100, q))
+            self.status.emit("Saving animated WebP...")
+            frames_pil[0].save(
+                out_file, save_all=True, append_images=frames_pil[1:],
+                duration=duration_ms, loop=0, lossless=False, quality=webp_q, method=4)
+            self.progress.emit(100)
+            return out_file
+
         first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
         ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
@@ -1143,7 +1201,7 @@ class ProcessingWorker(QThread):
                    '-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le']
         else: self.error.emit(f"Unknown format: {fmt}"); return None
 
-        if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte'):
+        if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte', 'webp_anim'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
                     '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4') else 'copy'), '-shortest']
         # Add -progress pipe:1 for real-time encode progress
@@ -1235,7 +1293,7 @@ class BatchWorker(QThread):
                 else:
                     # Check if output exists
                     out = job['output']
-                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4'}
+                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp'}
                     if job['format'] != 'png_seq':
                         out = os.path.splitext(out)[0] + ext_map.get(job['format'], '.mov')
                     if os.path.exists(out):
@@ -1766,6 +1824,8 @@ class ModelManagerDialog(QDialog):
         path = os.path.join(MODELS_DIR, filename)
         try:
             if os.path.isfile(path): os.remove(path)
+            sidecar = path + '.sha256'
+            if os.path.isfile(sidecar): os.remove(sidecar)
             self.table.setItem(row, 2, QTableWidgetItem("Not downloaded"))
             self.table.setItem(row, 3, QTableWidgetItem("--"))
             self.table.removeCellWidget(row, 4)
@@ -2394,7 +2454,7 @@ class AlphaCutWindow(QMainWindow):
             self._start_single(model_key, fmt, pattern)
 
     def _start_single(self, model_key, fmt, pattern):
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp'}
         if fmt == 'png_seq':
             out = QFileDialog.getExistingDirectory(self, "Select Output Folder")
             if not out: return
