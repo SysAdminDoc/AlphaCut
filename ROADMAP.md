@@ -1,34 +1,5 @@
 # AlphaCut — Development Roadmap
 
-## v1.0.0 (2,402 lines) — All 6 Phases Complete
-
----
-
-## Phase 1: Core Engine & Quality (v0.3.0) — DONE
-- Temporal smoothing, edge refinement, engine caching
-- Audio passthrough, matte output, scrubable preview, settings persistence
-
-## Phase 2: UI/UX Overhaul (v0.4.0) — DONE
-- Split preview, smart picker, toasts, animated progress, system tray
-
-## Phase 3: Batch & Workflow (v0.5.0) — DONE
-- Batch queue, job table, CLI, auto-naming, presets, recent files
-
-## Phase 4: Performance (v0.6.0) — DONE
-- Pipelined I/O, frame skip, benchmark, memory monitoring
-
-## Phase 5: Advanced Compositing (v0.7.0) — DONE
-- Background replacement, spill suppression, shadow preservation, mask inversion
-
-## Phase 6: Polish & Distribution (v1.0.0) — DONE
-- Menu bar (File/Tools/Help)
-- About dialog (version, system info, links)
-- Update checker (GitHub releases API)
-- Model Manager (view/delete/clear cached models)
-- Resume interrupted jobs (progress persistence)
-
----
-
 ## Future Ideas
 - PyInstaller single-exe packaging
 - Inno Setup installer for Windows
@@ -37,3 +8,30 @@
 - Drag-out support (drag output file to NLE)
 - Localization scaffold (i18n-ready strings)
 - Thumbnail grid for batch preview
+
+## Open-Source Research (Round 2)
+
+### Related OSS Projects
+- **danielgatis/rembg** — https://github.com/danielgatis/rembg — U2Net/ISNet/BiRefNet runner, CLI/HTTP/Python/Docker, FFmpeg-pipe mode for RGB24 stdin.
+- **nadermx/backgroundremover** — https://github.com/nadermx/backgroundremover — CLI-first image+video removal, reference for checkpoint auto-download UX.
+- **Ckrest/rvm-virtual-camera** — https://github.com/Ckrest/rvm-virtual-camera — Real-time Robust Video Matting to a virtual cam; reference for live preview + OBS-friendly output.
+- **PeterL1n/RobustVideoMatting** — https://github.com/PeterL1n/RobustVideoMatting — Upstream RVM model with temporal coherence; cleaner edges than frame-by-frame U2Net on fast motion.
+- **Akascape/Rembg-Fuse** — https://github.com/Akascape/Rembg-Fuse — DaVinci Resolve Fusion plugin; reference for node-graph compositing UX and alpha-over-plate workflows.
+- **Shlok-crypto/Background-Remover-RealTime** — https://github.com/Shlok-crypto/Background-Remover-RealTime — Webcam replace+blur pipeline.
+- **sunwood-ai-labs/video-background-remover-cli** — https://github.com/Sunwood-ai-labs/video-background-remover-cli — rembg + OpenCV, exports transparent WebP/GIF and MatAnyone foreground+alpha pair.
+
+### Features to Borrow
+- **Virtual camera output** (rvm-virtual-camera) — pipe the alpha composite to an OBS Virtual Camera endpoint on Windows (via `pyvirtualcam`) for live Zoom/Meet use; a huge distribution multiplier.
+- **FFmpeg-pipe RGB24 mode** (rembg) — accept `ffmpeg -i IN -f rawvideo -pix_fmt rgb24 - | alphacut --pipe` so long pipelines can fuse with upstream filters without disk I/O.
+- **MatAnyone foreground/alpha pair export** (video-background-remover-cli) — not just ProRes4444 — also export a separate foreground RGB video and a matte video so downstream NLEs without alpha-aware decoders still work.
+- **Temporal-coherent model path** (RVM) — add RVM as a 9th model for live/interview footage where U2Net flickers on hair/edges frame-to-frame.
+- **Animated WebP/GIF transparent export** (video-background-remover-cli) — single-file deliverable for web designers doing product-shot overlays; ~40% smaller than WebM/VP9 alpha for short loops.
+- **Interactive refine-mask brush** (Rembg-Fuse node graph) — manual one-frame brush fix that propagates via optical flow; addresses the "98% perfect, but this one leaf" problem.
+- **Optical-flow mask propagation** (RVM recurrent state) — when frame-skipping, blend masks via DIS optical flow instead of straight reuse so fast-moving edges don't lag.
+- **Built-in chroma-key fallback** (Ckrest/rvm-virtual-camera) — when a true green screen is present, a classical chroma key delivers better edges than any NN at a fraction of the cost; let the pipeline auto-detect a dominant green/blue background and offer it.
+
+### Patterns & Architectures Worth Studying
+- **Producer / matter / compositor triple-queue pipeline** (rembg FFmpeg-pipe mode) — already matches AlphaCut's pipelined I/O design; extending to a 4th "encoder" stage with bounded queues makes backpressure explicit.
+- **ONNX + NCNN Vulkan dual backend** (RVM, rvm-virtual-camera) — ship the same model as NCNN for Vulkan users (Apple Silicon & AMD), avoiding CUDA-only lock-in.
+- **Model-registry JSON with auto-download + SHA-256 verification** (rembg, nadermx/backgroundremover) — one `models.json` that declares name/url/hash/size/license, keeps the app small and lets users drop new models without rebuilding.
+- **Virtual-camera plugin on Windows via UnifiedCamera / pyvirtualcam** — reference pattern for exposing the alpha-composite feed as a webcam to other apps.
