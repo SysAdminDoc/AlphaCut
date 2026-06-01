@@ -111,6 +111,12 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 | `BiRefNet-portrait` | Slow | Excellent | Portraits, hair detail |
 | `BiRefNet-general` | Slow | Excellent | **Best overall** |
 
+## Project Planning
+
+- `ROADMAP.md` - active and proposed work.
+- `COMPLETED.md` - shipped roadmap history.
+- `RESEARCH_REPORT.md` - research notes that inform future roadmap candidates.
+
 ## Architecture
 
 ```
