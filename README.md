@@ -1,10 +1,10 @@
-# AlphaCut v1.3.0
+# AlphaCut v1.4.0
 
 **Video background removal & compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
 
-![Version](https://img.shields.io/badge/Version-v1.3.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.4.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -24,6 +24,8 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 - Resume Interrupted Jobs — progress saved every 50 frames, auto-resumes on restart
 
 **Advanced Compositing**
+- ROI Selection — crop AI inference to a preview-selected subject region
+- Manual Mask Painting — foreground/background brush corrections applied to preview, single export, and batch export
 - Background Replacement — solid color (6 presets + custom picker) or image file
 - Color Spill Suppression — reduce green/blue/red spill along mask edges
 - Shadow Preservation — detect and keep ground shadows via luminance analysis
@@ -142,6 +144,7 @@ AlphaCut.py (single file, ~3,100 lines)
 ├── AboutDialog — Version/system info
 ├── ModelManagerDialog — Download/delete models
 ├── SplitPreviewWidget — Before/after comparison
+│   └── ROI selection + manual mask paint overlays
 ├── ToastWidget — Floating notifications
 ├── CLI — Full argparse headless interface
 └── Settings/Presets — JSON persistence

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.3.0 — AI Video Background Removal
+AlphaCut v1.4.0 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -10,7 +10,7 @@ MIT License — Copyright (c) 2025-2026 SysAdminDoc
 https://github.com/SysAdminDoc/AlphaCut
 """
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -124,7 +124,7 @@ _bootstrap()
 # ═══════════════════════════════════════════════════════════════════════════════
 import math
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy.ndimage import gaussian_filter, binary_erosion, binary_dilation
 import onnxruntime as ort
 from PyQt6.QtWidgets import (
@@ -442,9 +442,61 @@ class AlphaCutEngine:
         if 'DmlExecutionProvider' in available: providers.append('DmlExecutionProvider')
         providers.append('CPUExecutionProvider'); return providers
 
-    def predict_mask(self, pil_img):
+    @staticmethod
+    def roi_to_box(size, roi):
+        """Convert normalized ROI {x,y,w,h} to an image-space crop box."""
+        if not roi:
+            return None
+        try:
+            iw, ih = size
+            x = max(0.0, min(1.0, float(roi.get('x', 0.0))))
+            y = max(0.0, min(1.0, float(roi.get('y', 0.0))))
+            w = max(0.0, min(1.0, float(roi.get('w', 0.0))))
+            h = max(0.0, min(1.0, float(roi.get('h', 0.0))))
+        except (TypeError, ValueError, AttributeError):
+            return None
+        x1 = int(round(x * iw)); y1 = int(round(y * ih))
+        x2 = int(round(min(1.0, x + w) * iw)); y2 = int(round(min(1.0, y + h) * ih))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            return None
+        return (max(0, x1), max(0, y1), min(iw, x2), min(ih, y2))
+
+    @staticmethod
+    def apply_mask_edits(mask, edits):
+        """Apply normalized foreground/background brush strokes to an L-mode mask."""
+        if not edits:
+            return mask
+        out = mask.copy().convert('L')
+        draw = ImageDraw.Draw(out)
+        mw, mh = out.size
+        for stroke in edits:
+            try:
+                pts = stroke.get('points') or []
+                if not pts:
+                    continue
+                value = 0 if stroke.get('mode') == 'bg' else 255
+                size = max(1, int(stroke.get('size', 24)))
+                xy = []
+                for pt in pts:
+                    nx, ny = pt
+                    px = int(round(max(0.0, min(1.0, float(nx))) * (mw - 1)))
+                    py = int(round(max(0.0, min(1.0, float(ny))) * (mh - 1)))
+                    xy.append((px, py))
+                if len(xy) == 1:
+                    r = max(1, size // 2)
+                    x, y = xy[0]
+                    draw.ellipse((x - r, y - r, x + r, y + r), fill=value)
+                else:
+                    draw.line(xy, fill=value, width=size, joint='curve')
+            except Exception:
+                continue
+        return out
+
+    def predict_mask(self, pil_img, roi=None):
+        roi_box = self.roi_to_box(pil_img.size, roi)
+        source_img = pil_img.crop(roi_box) if roi_box else pil_img
         cfg = self.config; size_wh = cfg['size']; mean, std = cfg['mean'], cfg['std']
-        im = pil_img.convert('RGB').resize(size_wh, Image.Resampling.LANCZOS)
+        im = source_img.convert('RGB').resize(size_wh, Image.Resampling.LANCZOS)
         a = np.array(im, dtype=np.float32); a = a / max(np.max(a), 1e-6)
         for c in range(3): a[:,:,c] = (a[:,:,c] - mean[c]) / std[c]
         tensor = np.expand_dims(a.transpose((2,0,1)), 0).astype(np.float32)
@@ -455,7 +507,12 @@ class AlphaCutEngine:
         if ma - mi > 1e-6: pred = (pred - mi) / (ma - mi)
         pred = np.squeeze(pred)
         mask = Image.fromarray((np.clip(pred, 0, 1) * 255).astype(np.uint8), 'L')
-        return mask.resize(pil_img.size, Image.Resampling.LANCZOS)
+        mask = mask.resize(source_img.size, Image.Resampling.LANCZOS)
+        if roi_box:
+            full = Image.new('L', pil_img.size, 0)
+            full.paste(mask, roi_box)
+            return full
+        return mask
 
     def refine_mask(self, mask, edge_softness=0, mask_shift=0, temporal_smooth=0):
         arr = np.array(mask, dtype=np.float32) / 255.0
@@ -864,7 +921,7 @@ class ProcessingWorker(QThread):
                  edge_softness=0, mask_shift=0, temporal_smooth=0, keep_audio=True,
                  frame_skip=1, invert_mask=False, spill_strength=0, spill_color='green',
                  shadow_strength=0, bg_color=None, bg_image_path=None, resume_from=0,
-                 quality=70):
+                 quality=70, roi=None, mask_edits=None):
         super().__init__()
         self.input_path = input_path; self.output_path = output_path
         self.model_key = model_key; self.output_format = output_format
@@ -876,6 +933,8 @@ class ProcessingWorker(QThread):
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
         self.resume_from = resume_from
         self.quality = max(0, min(100, quality))
+        self.roi = roi
+        self.mask_edits = mask_edits or []
         self._cancelled = False
 
     def cancel(self): self._cancelled = True
@@ -1029,6 +1088,10 @@ class ProcessingWorker(QThread):
                 self.log.emit(f"Shadow preservation: {self.shadow_strength}%")
             if self.bg_color is not None:
                 self.log.emit(f"Background color: {self.bg_color}")
+            if self.roi:
+                self.log.emit("ROI selection: ON")
+            if self.mask_edits:
+                self.log.emit(f"Manual mask edits: {len(self.mask_edits)} stroke(s)")
 
             # ── PIPELINED PROCESSING ──
             # Pre-read queue feeds PIL images ahead of inference
@@ -1118,10 +1181,12 @@ class ProcessingWorker(QThread):
 
                 if should_infer:
                     # Get raw mask
-                    mask = engine.predict_mask(img)
+                    mask = engine.predict_mask(img, self.roi)
                     if self.edge_softness > 0 or self.mask_shift != 0 or self.temporal_smooth > 0:
                         mask = engine.refine_mask(mask, self.edge_softness,
                                                   self.mask_shift, self.temporal_smooth)
+                    if self.mask_edits:
+                        mask = AlphaCutEngine.apply_mask_edits(mask, self.mask_edits)
                     last_mask_img = mask
                     last_inferred_idx = frame_num
                 else:
@@ -1414,7 +1479,9 @@ class BatchWorker(QThread):
                 shadow_strength=job.get('shadow_strength', 0),
                 bg_color=job.get('bg_color'),
                 bg_image_path=job.get('bg_image_path'),
-                quality=job.get('quality', 70))
+                quality=job.get('quality', 70),
+                roi=job.get('roi'),
+                mask_edits=job.get('mask_edits'))
 
             # Wire signals to batch relay
             worker.progress.connect(lambda pct, idx=i: self.job_progress.emit(idx, pct))
@@ -1633,7 +1700,7 @@ class PreviewFrameWorker(QThread):
 
     def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0, seek_pct=0.1,
                  invert_mask=False, spill_strength=0, spill_color='green',
-                 shadow_strength=0, bg_color=None, bg_image_path=None):
+                 shadow_strength=0, bg_color=None, bg_image_path=None, roi=None, mask_edits=None):
         super().__init__()
         self.input_path = input_path; self.model_key = model_key
         self.max_res = max_res; self.edge_softness = edge_softness
@@ -1641,6 +1708,8 @@ class PreviewFrameWorker(QThread):
         self.invert_mask = invert_mask; self.spill_strength = spill_strength
         self.spill_color = spill_color; self.shadow_strength = shadow_strength
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
+        self.roi = roi
+        self.mask_edits = mask_edits or []
 
     def run(self):
         tmp = None
@@ -1664,9 +1733,11 @@ class PreviewFrameWorker(QThread):
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m))
 
             # Full compositing pipeline (mirrors ProcessingWorker)
-            mask = engine.predict_mask(img)
+            mask = engine.predict_mask(img, self.roi)
             if self.edge_softness > 0 or self.mask_shift != 0:
                 mask = engine.refine_mask(mask, self.edge_softness, self.mask_shift, 0)
+            if self.mask_edits:
+                mask = AlphaCutEngine.apply_mask_edits(mask, self.mask_edits)
             current_mask = mask.copy()
             if self.shadow_strength > 0:
                 current_mask = AlphaCutEngine.preserve_shadows(img, current_mask, self.shadow_strength)
@@ -1705,7 +1776,7 @@ class BenchmarkWorker(QThread):
 
     def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0,
                  invert_mask=False, spill_strength=0, spill_color='green',
-                 shadow_strength=0, bg_color=None, bg_image_path=None):
+                 shadow_strength=0, bg_color=None, bg_image_path=None, roi=None, mask_edits=None):
         super().__init__()
         self.input_path = input_path; self.model_key = model_key
         self.max_res = max_res; self.edge_softness = edge_softness
@@ -1713,6 +1784,8 @@ class BenchmarkWorker(QThread):
         self.invert_mask = invert_mask; self.spill_strength = spill_strength
         self.spill_color = spill_color; self.shadow_strength = shadow_strength
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
+        self.roi = roi
+        self.mask_edits = mask_edits or []
 
     def run(self):
         tmp_dir = None
@@ -1759,9 +1832,11 @@ class BenchmarkWorker(QThread):
             for fpath in frames:
                 img = Image.open(fpath)
                 # Full compositing pipeline to get accurate timing
-                mask = engine.predict_mask(img)
+                mask = engine.predict_mask(img, self.roi)
                 if self.edge_softness > 0 or self.mask_shift != 0:
                     mask = engine.refine_mask(mask, self.edge_softness, self.mask_shift, 0)
+                if self.mask_edits:
+                    mask = AlphaCutEngine.apply_mask_edits(mask, self.mask_edits)
                 current_mask = mask
                 if self.shadow_strength > 0:
                     current_mask = AlphaCutEngine.preserve_shadows(img, current_mask, self.shadow_strength)
@@ -1841,11 +1916,20 @@ class DropZone(QLabel):
 
 
 class SplitPreviewWidget(QWidget):
+    edits_changed = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setMinimumSize(320, 160)
         self._original = None; self._processed = None
         self._split_pos = 0.5; self._dragging = False; self._show_split = False
+        self._edit_mode = 'compare'
+        self._brush_size = 32
+        self._roi = None
+        self._roi_anchor = None
+        self._drawing_roi = False
+        self._drawing_stroke = False
+        self._mask_strokes = []
         self.setMouseTracking(True)
 
     def set_images(self, orig, proc):
@@ -1856,6 +1940,41 @@ class SplitPreviewWidget(QWidget):
     def set_frame(self, qimage):
         self._processed = qimage; self._original = None; self._show_split = False; self.update()
 
+    def set_edit_mode(self, mode):
+        self._edit_mode = mode
+        if mode == 'compare':
+            self.setCursor(Qt.CursorShape.SplitHCursor if self._show_split else Qt.CursorShape.ArrowCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        self.update()
+
+    def set_brush_size(self, size):
+        self._brush_size = max(1, int(size))
+        self.update()
+
+    def clear_mask_edits(self):
+        self._roi = None
+        self._mask_strokes.clear()
+        self._drawing_roi = False
+        self._drawing_stroke = False
+        self.update()
+        self.edits_changed.emit()
+
+    def get_roi(self):
+        return dict(self._roi) if self._roi else None
+
+    def get_mask_edits(self):
+        return [{'mode': s['mode'], 'size': s['size'], 'points': list(s['points'])}
+                for s in self._mask_strokes if s.get('points')]
+
+    def edit_summary(self):
+        parts = []
+        if self._roi:
+            parts.append("ROI")
+        if self._mask_strokes:
+            parts.append(f"{len(self._mask_strokes)} stroke(s)")
+        return " + ".join(parts) if parts else "No mask edits"
+
     def paintEvent(self, event):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor(10, 12, 16))
@@ -1864,14 +1983,32 @@ class SplitPreviewWidget(QWidget):
         else:
             p.setPen(QColor(61, 68, 85))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Preview appears here")
+        if self._processed:
+            self._paint_edit_overlay(p)
         p.end()
 
-    def _paint_split(self, p):
+    def _image_rect_for(self, iw, ih):
         w, h = self.width(), self.height()
+        if iw <= 0 or ih <= 0:
+            return (0, 0, w, h, 1.0)
+        scale = min(w / iw, h / ih)
+        dw, dh = int(iw * scale), int(ih * scale)
+        return ((w - dw) // 2, (h - dh) // 2, dw, dh, scale)
+
+    def _current_image_size(self):
+        qi = self._processed if self._processed is not None else self._original
+        if qi is None:
+            return (0, 0)
+        return (qi.width(), qi.height())
+
+    def _display_rect(self):
+        iw, ih = self._current_image_size()
+        return self._image_rect_for(iw, ih)
+
+    def _paint_split(self, p):
         iw, ih = self._processed.width(), self._processed.height()
         if iw == 0 or ih == 0: return
-        scale = min(w / iw, h / ih); dw, dh = int(iw * scale), int(ih * scale)
-        ox, oy = (w - dw) // 2, (h - dh) // 2
+        ox, oy, dw, dh, _ = self._image_rect_for(iw, ih)
         checker = self._checkerboard(dw, dh); p.drawImage(ox, oy, checker)
         sx = ox + int(dw * self._split_pos)
         orig_s = self._original.scaled(dw, dh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -1891,18 +2028,107 @@ class SplitPreviewWidget(QWidget):
         w, h = self.width(), self.height()
         iw, ih = qi.width(), qi.height()
         if iw == 0 or ih == 0: return
-        scale = min(w/iw, h/ih)
-        dw, dh = int(iw*scale), int(ih*scale); ox, oy = (w-dw)//2, (h-dh)//2
+        ox, oy, dw, dh, _ = self._image_rect_for(iw, ih)
         p.drawImage(ox, oy, self._checkerboard(dw, dh))
         p.drawImage(ox, oy, qi.scaled(dw, dh, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
+    def _paint_edit_overlay(self, p):
+        iw, ih = self._current_image_size()
+        if iw <= 0 or ih <= 0:
+            return
+        ox, oy, dw, dh, scale = self._display_rect()
+        if self._roi:
+            x = ox + int(self._roi['x'] * dw)
+            y = oy + int(self._roi['y'] * dh)
+            rw = int(self._roi['w'] * dw)
+            rh = int(self._roi['h'] * dh)
+            p.setPen(QPen(QColor(245, 158, 11), 2, Qt.PenStyle.DashLine))
+            p.setBrush(QColor(245, 158, 11, 32))
+            p.drawRect(x, y, rw, rh)
+        for stroke in self._mask_strokes:
+            pts = stroke.get('points') or []
+            if not pts:
+                continue
+            color = QColor(34, 197, 94, 190) if stroke.get('mode') == 'fg' else QColor(239, 68, 68, 190)
+            width = max(2, int(stroke.get('size', 24) * scale))
+            p.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            mapped = [(ox + int(x * dw), oy + int(y * dh)) for x, y in pts]
+            if len(mapped) == 1:
+                x, y = mapped[0]
+                r = max(2, width // 2)
+                p.setBrush(color)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(x - r, y - r, r * 2, r * 2)
+            else:
+                for a, b in zip(mapped, mapped[1:]):
+                    p.drawLine(a[0], a[1], b[0], b[1])
+
+    def _map_to_norm(self, pos):
+        ox, oy, dw, dh, _ = self._display_rect()
+        x = float(pos.x()); y = float(pos.y())
+        if x < ox or y < oy or x > ox + dw or y > oy + dh:
+            return None
+        return ((x - ox) / max(dw, 1), (y - oy) / max(dh, 1))
+
+    @staticmethod
+    def _roi_from_points(a, b):
+        x1, y1 = a; x2, y2 = b
+        x = max(0.0, min(x1, x2)); y = max(0.0, min(y1, y2))
+        w = min(1.0, max(x1, x2)) - x; h = min(1.0, max(y1, y2)) - y
+        if w < 0.01 or h < 0.01:
+            return None
+        return {'x': x, 'y': y, 'w': w, 'h': h}
+
     def mousePressEvent(self, e):
-        if self._show_split and e.button() == Qt.MouseButton.LeftButton:
-            self._dragging = True; self._update_split(e.position().x())
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        if self._edit_mode == 'compare':
+            if self._show_split:
+                self._dragging = True; self._update_split(e.position().x())
+            return
+        if self._processed is None and self._original is None:
+            return
+        pt = self._map_to_norm(e.position())
+        if pt is None:
+            return
+        if self._edit_mode == 'roi':
+            self._roi_anchor = pt
+            self._roi = {'x': pt[0], 'y': pt[1], 'w': 0.0, 'h': 0.0}
+            self._drawing_roi = True
+            self.update()
+        elif self._edit_mode in ('fg', 'bg'):
+            self._mask_strokes.append({'mode': self._edit_mode, 'size': self._brush_size, 'points': [pt]})
+            self._drawing_stroke = True
+            self.update()
+
     def mouseMoveEvent(self, e):
-        if self._show_split: self.setCursor(Qt.CursorShape.SplitHCursor)
-        if self._dragging: self._update_split(e.position().x())
-    def mouseReleaseEvent(self, e): self._dragging = False
+        if self._edit_mode == 'compare':
+            if self._show_split: self.setCursor(Qt.CursorShape.SplitHCursor)
+            if self._dragging: self._update_split(e.position().x())
+            return
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        pt = self._map_to_norm(e.position())
+        if pt is None:
+            return
+        if self._drawing_roi and self._roi_anchor:
+            self._roi = self._roi_from_points(self._roi_anchor, pt)
+            self.update()
+        elif self._drawing_stroke and self._mask_strokes:
+            self._mask_strokes[-1]['points'].append(pt)
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._edit_mode == 'compare':
+            self._dragging = False
+            return
+        changed = self._drawing_roi or self._drawing_stroke
+        self._drawing_roi = False
+        self._drawing_stroke = False
+        self._roi_anchor = None
+        if changed:
+            self.update()
+            self.edits_changed.emit()
+
     def _update_split(self, mx):
         w = self.width(); iw = self._processed.width() if self._processed else w
         ih = self._processed.height() if self._processed else self.height()
@@ -2419,13 +2645,34 @@ class AlphaCutWindow(QMainWindow):
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(0,0,0,0); rl.setSpacing(10)
 
         grp_prev = QGroupBox("PREVIEW"); pl = QVBoxLayout(grp_prev)
-        self.preview = SplitPreviewWidget(); pl.addWidget(self.preview)
+        self.preview = SplitPreviewWidget()
+        self.preview.edits_changed.connect(self._sync_edit_summary)
+        pl.addWidget(self.preview)
         scrub_row = QHBoxLayout(); scrub_row.addWidget(QLabel("Position"))
         self.sl_scrub = QSlider(Qt.Orientation.Horizontal); self.sl_scrub.setRange(0, 100); self.sl_scrub.setValue(10)
         self.sl_scrub.setEnabled(False); scrub_row.addWidget(self.sl_scrub, stretch=1)
         self.lbl_scrub = QLabel("10%"); self.lbl_scrub.setObjectName("sliderVal"); scrub_row.addWidget(self.lbl_scrub)
         self.sl_scrub.valueChanged.connect(lambda v: self.lbl_scrub.setText(f"{v}%"))
-        pl.addLayout(scrub_row); rl.addWidget(grp_prev, stretch=3)
+        pl.addLayout(scrub_row)
+        edit_row = QHBoxLayout(); edit_row.addWidget(QLabel("Mask Tool"))
+        self.combo_mask_tool = QComboBox()
+        self.combo_mask_tool.addItem("Compare", "compare")
+        self.combo_mask_tool.addItem("ROI", "roi")
+        self.combo_mask_tool.addItem("Paint Keep", "fg")
+        self.combo_mask_tool.addItem("Paint Remove", "bg")
+        self.combo_mask_tool.currentIndexChanged.connect(self._preview_tool_changed)
+        edit_row.addWidget(self.combo_mask_tool, stretch=1)
+        self.spin_brush = QSpinBox(); self.spin_brush.setRange(4, 256); self.spin_brush.setValue(32); self.spin_brush.setSuffix("px")
+        self.spin_brush.valueChanged.connect(self._brush_size_changed)
+        edit_row.addWidget(self.spin_brush)
+        self.btn_clear_edits = QPushButton("Clear"); self.btn_clear_edits.setObjectName("small")
+        self.btn_clear_edits.clicked.connect(self._clear_mask_edits)
+        edit_row.addWidget(self.btn_clear_edits)
+        pl.addLayout(edit_row)
+        self.lbl_edit_summary = QLabel("No mask edits"); self.lbl_edit_summary.setObjectName("subtitle")
+        pl.addWidget(self.lbl_edit_summary)
+        self._preview_tool_changed(0)
+        rl.addWidget(grp_prev, stretch=3)
 
         # Batch table
         grp_batch = QGroupBox("BATCH QUEUE"); bl = QVBoxLayout(grp_batch)
@@ -2500,6 +2747,7 @@ class AlphaCutWindow(QMainWindow):
         if not self._input_path or not find_ffmpeg(): return
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
         comp = self._get_compositing_params()
+        roi, mask_edits = self._mask_controls()
         self.btn_benchmark.setEnabled(False); self.btn_benchmark.setText("Running...")
         self.lbl_status.setText("Benchmarking...")
         self._benchmark_worker = BenchmarkWorker(
@@ -2507,7 +2755,8 @@ class AlphaCutWindow(QMainWindow):
             edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
-            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'])
+            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
+            roi=roi, mask_edits=mask_edits)
         self._benchmark_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._benchmark_worker.result.connect(self._benchmark_done)
         self._benchmark_worker.error.connect(self._benchmark_err)
@@ -2680,6 +2929,12 @@ class AlphaCutWindow(QMainWindow):
         if 'shadow_strength' in s: self.sl_shadow.setValue(s['shadow_strength'])
         if 'bg_index' in s: self.combo_bg.setCurrentIndex(min(s['bg_index'], self.combo_bg.count()-1))
         if 'quality' in s: self.sl_quality.setValue(s['quality'])
+        if 'brush_size' in s:
+            try:
+                brush_size = int(s['brush_size'])
+                self.spin_brush.setValue(max(self.spin_brush.minimum(), min(brush_size, self.spin_brush.maximum())))
+            except (TypeError, ValueError):
+                pass
 
     def _save_settings(self):
         s = load_settings()
@@ -2691,7 +2946,8 @@ class AlphaCutWindow(QMainWindow):
             'invert_mask': self.chk_invert.isChecked(), 'spill_strength': self.sl_spill.value(),
             'spill_color_index': self.combo_spill.currentIndex(),
             'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex(),
-            'quality': self.sl_quality.value()})
+            'quality': self.sl_quality.value(),
+            'brush_size': self.spin_brush.value()})
         save_settings(s)
 
     # ── Input ──
@@ -2722,6 +2978,7 @@ class AlphaCutWindow(QMainWindow):
         if not os.path.isfile(path): return
         self._input_path = path; self._batch_jobs = []
         self.grp_batch.setVisible(False); self.job_table.clear_all()
+        self.preview.clear_mask_edits()
         add_recent_file(path)
         self._log(f"\nLoaded: {os.path.basename(path)}")
         self.lbl_status.setText(f"Loaded: {os.path.basename(path)}")
@@ -2757,6 +3014,7 @@ class AlphaCutWindow(QMainWindow):
         self._batch_jobs = [p for p in paths if os.path.isfile(p)]
         if not self._batch_jobs: return
         self._input_path = self._batch_jobs[0]
+        self.preview.clear_mask_edits()
         # Batch-update recent files in a single read-modify-write
         s = load_settings()
         recent = s.get('recent_files', [])
@@ -2790,11 +3048,31 @@ class AlphaCutWindow(QMainWindow):
         est = estimate_output_size(self._video_info, fmt)
         self.lbl_estimate.setText(f"~{est/1024:.1f} GB" if est > 1024 else f"~{est:.0f} MB" if est > 0 else "")
 
+    def _preview_tool_changed(self, index):
+        mode = self.combo_mask_tool.currentData() or 'compare'
+        self.preview.set_edit_mode(mode)
+        self.spin_brush.setEnabled(mode in ('fg', 'bg'))
+
+    def _brush_size_changed(self, value):
+        self.preview.set_brush_size(value)
+
+    def _clear_mask_edits(self):
+        self.preview.clear_mask_edits()
+        self._sync_edit_summary()
+        self._toast_msg("Mask edits cleared")
+
+    def _sync_edit_summary(self):
+        self.lbl_edit_summary.setText(self.preview.edit_summary())
+
+    def _mask_controls(self):
+        return self.preview.get_roi(), self.preview.get_mask_edits()
+
     # ── Preview ──
     def _preview_frame(self):
         if not self._input_path or not find_ffmpeg(): return
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
         comp = self._get_compositing_params()
+        roi, mask_edits = self._mask_controls()
         self.btn_preview.setEnabled(False); self.btn_preview.setText("Previewing...")
         self._preview_worker = PreviewFrameWorker(
             self._input_path, model_key, self.spin_res.value(),
@@ -2802,7 +3080,8 @@ class AlphaCutWindow(QMainWindow):
             seek_pct=self.sl_scrub.value() / 100.0,
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
-            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'])
+            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
+            roi=roi, mask_edits=mask_edits)
         self._preview_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._preview_worker.result.connect(self._preview_done)
         self._preview_worker.error.connect(self._preview_err)
@@ -2864,10 +3143,11 @@ class AlphaCutWindow(QMainWindow):
                     self._log(f"WARNING: Low disk space! Need ~{est_mb*2.5:.0f} MB, have {free_mb:.0f} MB")
             except Exception: pass
         self._begin_processing()
+        roi, mask_edits = self._mask_controls()
         
         # Check if chroma-key should be used instead of AI
         if (self.chk_use_chroma.isVisible() and self.chk_use_chroma.isChecked() 
-                and self._chroma_result):
+                and self._chroma_result and not roi and not mask_edits):
             self._worker = ChromaKeyWorker(
                 self._input_path, out, fmt,
                 self._chroma_result['color'],
@@ -2883,6 +3163,8 @@ class AlphaCutWindow(QMainWindow):
             self._worker.error.connect(self._err)
             self._worker.start()
             return
+        if self.chk_use_chroma.isVisible() and self.chk_use_chroma.isChecked() and (roi or mask_edits):
+            self._log("ROI/mask edits active; using AI pipeline instead of chroma-key.")
         
         comp = self._get_compositing_params()
         self._worker = ProcessingWorker(
@@ -2893,7 +3175,7 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            quality=self.sl_quality.value())
+            quality=self.sl_quality.value(), roi=roi, mask_edits=mask_edits)
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.progress.connect(self._update_tray_progress)
         self._worker.frame_info.connect(lambda c, t: self.lbl_frame.setText(f"Frame {c} / {t}"))
@@ -2909,6 +3191,7 @@ class AlphaCutWindow(QMainWindow):
         out_dir = QFileDialog.getExistingDirectory(self, "Select Output Folder")
         if not out_dir: return
         comp = self._get_compositing_params()
+        roi, mask_edits = self._mask_controls()
         jobs = []
         for path in self._batch_jobs:
             out_name = generate_output_name(path, pattern, model_key, fmt)
@@ -2918,6 +3201,7 @@ class AlphaCutWindow(QMainWindow):
                          'shift': self.sl_shift.value(), 'temporal': self.sl_temporal.value(),
                          'audio': self.chk_audio.isChecked(), 'frame_skip': self.sl_frame_skip.value(),
                          'quality': self.sl_quality.value(),
+                         'roi': roi, 'mask_edits': mask_edits,
                          **comp})
         self._begin_processing()
         self._batch_worker = BatchWorker(jobs)
