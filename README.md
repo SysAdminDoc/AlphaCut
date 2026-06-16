@@ -1,10 +1,10 @@
-# AlphaCut v1.2.0
+# AlphaCut v1.3.0
 
 **Video background removal & compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
 
-![Version](https://img.shields.io/badge/Version-v1.2.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.3.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -55,6 +55,10 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 | **FFmpeg** | On PATH |
 | **NVIDIA GPU** | Optional — CUDA 12 + cuDNN 9 |
 
+## Installation
+
+Windows releases include `AlphaCut-Setup-<version>.exe`, an Inno Setup installer that installs AlphaCut per user and creates Start Menu shortcuts. The portable `AlphaCut-windows.exe` is still published for users who prefer a standalone executable.
+
 ## Quick Start
 
 ```bash
@@ -84,7 +88,7 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 | `-i`, `--input` | — | Input video file(s) |
 | `-o`, `--output` | Auto-named | Output path |
 | `-m`, `--model` | `u2net_human_seg` | Model name (partial match) |
-| `-f`, `--format` | `mp4` | mp4, prores, webm, webp_anim, png_seq, greenscreen, matte |
+| `-f`, `--format` | `mp4` | mp4, prores, webm, webp_anim, gif_anim, png_seq, greenscreen, matte |
 | `--max-res` | 0 (original) | Max resolution |
 | `--edge` | 0 | Edge softness (0-100) |
 | `--shift` | 0 | Mask shift (-20 to +20) |
@@ -114,13 +118,12 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 ## Project Planning
 
 - `ROADMAP.md` - active and proposed work.
-- `COMPLETED.md` - shipped roadmap history.
-- `RESEARCH_REPORT.md` - research notes that inform future roadmap candidates.
+- `RESEARCH.md` - research notes that inform future roadmap candidates.
 
 ## Architecture
 
 ```
-AlphaCut.py (single file, ~2,650 lines)
+AlphaCut.py (single file, ~3,100 lines)
 ├── Crash Handler + Bootstrap (auto-installs all deps)
 ├── AlphaCutEngine — ONNX inference + mask refinement
 │   ├── Edge refinement, temporal smoothing

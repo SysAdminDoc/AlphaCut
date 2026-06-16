@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.2.0 — AI Video Background Removal
+AlphaCut v1.3.0 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -10,7 +10,7 @@ MIT License — Copyright (c) 2025-2026 SysAdminDoc
 https://github.com/SysAdminDoc/AlphaCut
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
