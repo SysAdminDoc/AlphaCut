@@ -138,7 +138,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent, QMimeData
 from PyQt6.QtGui import (
     QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent, QPalette,
-    QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices, QDrag
+    QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices, QDrag,
+    QKeySequence
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2777,13 +2778,16 @@ class AlphaCutWindow(QMainWindow):
         mb = self.menuBar()
         # File menu
         file_menu = mb.addMenu(_tr("menu.file", "File"))
-        act_browse = QAction(_tr("menu.open_video", "Open Video..."), self); act_browse.triggered.connect(self._browse)
-        file_menu.addAction(act_browse)
-        act_batch = QAction(_tr("menu.open_batch", "Open Batch..."), self); act_batch.triggered.connect(self._browse_batch)
-        file_menu.addAction(act_batch)
+        act_browse = QAction(_tr("menu.open_video", "Open..."), self)
+        act_browse.setShortcut(QKeySequence.StandardKey.Open)
+        act_browse.triggered.connect(self._browse); file_menu.addAction(act_browse)
+        act_batch = QAction(_tr("menu.open_batch", "Open Batch..."), self)
+        act_batch.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_batch.triggered.connect(self._browse_batch); file_menu.addAction(act_batch)
         file_menu.addSeparator()
-        act_quit = QAction(_tr("menu.quit", "Quit"), self); act_quit.triggered.connect(self.close)
-        file_menu.addAction(act_quit)
+        act_quit = QAction(_tr("menu.quit", "Quit"), self)
+        act_quit.setShortcut(QKeySequence.StandardKey.Quit)
+        act_quit.triggered.connect(self.close); file_menu.addAction(act_quit)
         # Tools menu
         tools_menu = mb.addMenu(_tr("menu.tools", "Tools"))
         act_models = QAction(_tr("menu.model_manager", "Model Manager..."), self)
@@ -2938,17 +2942,20 @@ class AlphaCutWindow(QMainWindow):
 
         # Actions
         act_row = QHBoxLayout(); act_row.setSpacing(4)
-        self.btn_preview = QPushButton(_tr("btn.preview", "Preview")); self.btn_preview.setObjectName("secondary")
+        self.btn_preview = QPushButton(_tr("btn.preview", "Preview (Ctrl+P)")); self.btn_preview.setObjectName("secondary")
         self.btn_preview.setEnabled(False); self.btn_preview.setMinimumHeight(30)
+        self.btn_preview.setShortcut(QKeySequence("Ctrl+P"))
         self.btn_preview.clicked.connect(self._preview_frame); act_row.addWidget(self.btn_preview)
         self.btn_benchmark = QPushButton(_tr("btn.benchmark", "Benchmark")); self.btn_benchmark.setObjectName("secondary")
         self.btn_benchmark.setEnabled(False); self.btn_benchmark.setMinimumHeight(30)
         self.btn_benchmark.clicked.connect(self._run_benchmark); act_row.addWidget(self.btn_benchmark)
         ll.addLayout(act_row)
-        self.btn_start = QPushButton(_tr("btn.start", "Start Processing")); self.btn_start.setEnabled(False)
+        self.btn_start = QPushButton(_tr("btn.start", "Start Processing (Ctrl+Enter)")); self.btn_start.setEnabled(False)
         self.btn_start.setMinimumHeight(36); self.btn_start.setStyleSheet("font-size: 13px;")
+        self.btn_start.setShortcut(QKeySequence("Ctrl+Return"))
         self.btn_start.clicked.connect(self._start); ll.addWidget(self.btn_start)
         self.btn_cancel = QPushButton(_tr("btn.cancel", "Cancel")); self.btn_cancel.setObjectName("danger")
+        self.btn_cancel.setShortcut(QKeySequence("Escape"))
         self.btn_cancel.setVisible(False); self.btn_cancel.clicked.connect(self._cancel); ll.addWidget(self.btn_cancel)
 
         # Output actions
@@ -3017,6 +3024,28 @@ class AlphaCutWindow(QMainWindow):
         grp_log = QGroupBox(_tr("group.log", "LOG")); lgl = QVBoxLayout(grp_log)
         self.log_view = QTextEdit(); self.log_view.setReadOnly(True); self.log_view.setMaximumHeight(130)
         lgl.addWidget(self.log_view); rl.addWidget(grp_log, stretch=1)
+
+        # Accessibility — name interactive widgets for screen readers
+        self.combo_smart.setAccessibleName("Processing preset")
+        self.combo_model.setAccessibleName("AI model")
+        self.combo_fmt.setAccessibleName("Output format")
+        self.sl_quality.setAccessibleName("Output quality")
+        self.spin_res.setAccessibleName("Max resolution")
+        self.spin_gpu.setAccessibleName("GPU device")
+        self.sl_edge.setAccessibleName("Edge softness")
+        self.sl_shift.setAccessibleName("Mask shift")
+        self.sl_temporal.setAccessibleName("Temporal smoothing")
+        self.sl_frame_skip.setAccessibleName("Frame skip")
+        self.sl_spill.setAccessibleName("Spill suppression")
+        self.combo_spill.setAccessibleName("Spill color")
+        self.sl_shadow.setAccessibleName("Shadow preservation")
+        self.combo_bg.setAccessibleName("Background")
+        self.combo_naming.setAccessibleName("Output naming pattern")
+        self.combo_presets.setAccessibleName("Preset")
+        self.sl_scrub.setAccessibleName("Preview position")
+        self.combo_mask_tool.setAccessibleName("Mask editing tool")
+        self.spin_brush.setAccessibleName("Brush size")
+        self.preview.setAccessibleName("Preview display")
 
         # Prevent scroll-wheel from changing settings — requires click-to-focus
         self._no_scroll = NoScrollFilter(self)
@@ -3736,6 +3765,8 @@ def run_cli(args):
         ext = os.path.splitext(inp)[1].lower()
         if ext in IMAGE_EXTENSIONS:
             out = args.output if args.output else os.path.splitext(inp)[0] + '_alphacut.png'
+            if os.path.exists(out) and not args.overwrite:
+                print(f"Output exists: {out} (use -y to overwrite)"); continue
             _cli_process_image(inp, out, model_key, args, bg_color)
             continue
 
@@ -3745,6 +3776,18 @@ def run_cli(args):
             out = args.output
         else:
             out = generate_output_name(inp, "{name}_alphacut", model_key, fmt)
+        if os.path.exists(out) and not args.overwrite:
+            print(f"Output exists: {out} (use -y to overwrite)"); continue
+        info = get_video_info(inp)
+        if info:
+            est_mb = estimate_output_size(info, fmt)
+            try:
+                drive = os.path.splitdrive(out)[0] or '/'
+                free_mb = shutil.disk_usage(drive).free / (1024 * 1024)
+                if free_mb < est_mb * 2.5:
+                    print(f"  WARNING: Low disk space! Need ~{est_mb*2.5:.0f} MB, have {free_mb:.0f} MB")
+            except Exception:
+                pass
         print(f"\nProcessing: {inp}")
         print(f"  Model: {model_key}")
         print(f"  Format: {fmt}")
@@ -3926,6 +3969,7 @@ def main():
     parser.add_argument('--bg-color', help='Background color as R,G,B (e.g. 0,255,0)')
     parser.add_argument('--bg-image', help='Background image file path')
     parser.add_argument('--no-audio', action='store_true', help='Strip audio')
+    parser.add_argument('-y', '--overwrite', action='store_true', help='Overwrite output without confirmation')
     parser.add_argument('--gpu-device', type=int, default=-1,
                         help='GPU device index for inference (-1=auto, 0=first GPU, etc.)')
     parser.add_argument('--chroma-key', action='store_true', help='Use FFmpeg chroma-key instead of AI (for green/blue screen footage)')
