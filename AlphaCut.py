@@ -457,10 +457,11 @@ def _rgba_to_gif_frame(rgba_img):
 
 
 class AlphaCutEngine:
-    def __init__(self, model_key, log_fn=None, gpu_device=-1):
+    def __init__(self, model_key, log_fn=None, gpu_device=-1, fp16=False):
         self.config = MODELS[model_key]; self.model_key = model_key
         self.log = log_fn or print; self.session = None
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+        self.fp16 = fp16
         self._mask_buffer = deque(maxlen=9)
 
     def load(self):
@@ -472,9 +473,11 @@ class AlphaCutEngine:
         providers = self._detect_providers(self.gpu_device)
         self.session = ort.InferenceSession(path, sess_options=opts, providers=providers)
         active = self.session.get_providers()
+        self._use_fp16 = self.fp16 and any(p != 'CPUExecutionProvider' for p in active)
         gpu = any(p != 'CPUExecutionProvider' for p in active)
         device_label = "auto" if self.gpu_device < 0 else str(self.gpu_device)
-        self.log(f"Model loaded | {'GPU' if gpu else 'CPU'} ({', '.join(active)}) | device={device_label}")
+        prec = " | FP16" if self._use_fp16 else ""
+        self.log(f"Model loaded | {'GPU' if gpu else 'CPU'} ({', '.join(active)}) | device={device_label}{prec}")
 
     def reset_temporal(self): self._mask_buffer.clear()
 
@@ -555,7 +558,8 @@ class AlphaCutEngine:
         im = source_img.convert('RGB').resize(size_wh, Image.Resampling.LANCZOS)
         a = np.array(im, dtype=np.float32); a = a / max(np.max(a), 1e-6)
         for c in range(3): a[:,:,c] = (a[:,:,c] - mean[c]) / std[c]
-        tensor = np.expand_dims(a.transpose((2,0,1)), 0).astype(np.float32)
+        dtype = np.float16 if self._use_fp16 else np.float32
+        tensor = np.expand_dims(a.transpose((2,0,1)), 0).astype(dtype)
         ort_outs = self.session.run(None, {self.session.get_inputs()[0].name: tensor})
         pred = ort_outs[0][:, 0, :, :]
         if cfg['sigmoid']: pred = 1.0 / (1.0 + np.exp(-pred))
@@ -735,12 +739,12 @@ class AlphaCutEngine:
 _engine_cache = {'key': None, 'engine': None}
 _engine_lock = threading.Lock()
 
-def get_engine(model_key, log_fn=None, gpu_device=-1):
-    cache_key = (model_key, int(gpu_device) if gpu_device is not None else -1)
+def get_engine(model_key, log_fn=None, gpu_device=-1, fp16=False):
+    cache_key = (model_key, int(gpu_device) if gpu_device is not None else -1, bool(fp16))
     with _engine_lock:
         if _engine_cache['key'] == cache_key and _engine_cache['engine'] is not None:
             eng = _engine_cache['engine']; eng.log = log_fn or print; return eng
-        eng = AlphaCutEngine(model_key, log_fn=log_fn, gpu_device=cache_key[1]); eng.load()
+        eng = AlphaCutEngine(model_key, log_fn=log_fn, gpu_device=cache_key[1], fp16=fp16); eng.load()
         _engine_cache['key'] = cache_key; _engine_cache['engine'] = eng; return eng
 
 
@@ -993,7 +997,7 @@ class ProcessingWorker(QThread):
                  edge_softness=0, mask_shift=0, temporal_smooth=0, keep_audio=True,
                  frame_skip=1, invert_mask=False, spill_strength=0, spill_color='green',
                  shadow_strength=0, bg_color=None, bg_image_path=None, resume_from=0,
-                 quality=70, roi=None, mask_edits=None, gpu_device=-1):
+                 quality=70, roi=None, mask_edits=None, gpu_device=-1, fp16=False):
         super().__init__()
         self.input_path = input_path; self.output_path = output_path
         self.model_key = model_key; self.output_format = output_format
@@ -1008,6 +1012,7 @@ class ProcessingWorker(QThread):
         self.roi = roi
         self.mask_edits = mask_edits or []
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+        self.fp16 = fp16
         self._cancelled = False
 
     def cancel(self): self._cancelled = True
@@ -1135,7 +1140,7 @@ class ProcessingWorker(QThread):
             # ── PHASE 2: MODEL LOAD (10% → 15%) ──
             self.status.emit("Loading AI model...")
             self.progress.emit(11)
-            engine = get_engine(self.model_key, log_fn=self.log.emit, gpu_device=self.gpu_device)
+            engine = get_engine(self.model_key, log_fn=self.log.emit, gpu_device=self.gpu_device, fp16=self.fp16)
             engine.reset_temporal()
             self.progress.emit(15)
             if self._cancelled: return
@@ -1620,7 +1625,8 @@ class BatchWorker(QThread):
                 quality=job.get('quality', 70),
                 roi=job.get('roi'),
                 mask_edits=job.get('mask_edits'),
-                gpu_device=job.get('gpu_device', -1))
+                gpu_device=job.get('gpu_device', -1),
+                fp16=job.get('fp16', False))
 
             # Wire signals to batch relay
             worker.progress.connect(lambda pct, idx=i: self.job_progress.emit(idx, pct))
@@ -1841,7 +1847,7 @@ class PreviewFrameWorker(QThread):
     def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0, seek_pct=0.1,
                  invert_mask=False, spill_strength=0, spill_color='green',
                  shadow_strength=0, bg_color=None, bg_image_path=None, roi=None, mask_edits=None,
-                 gpu_device=-1):
+                 gpu_device=-1, fp16=False):
         super().__init__()
         self.input_path = input_path; self.model_key = model_key
         self.max_res = max_res; self.edge_softness = edge_softness
@@ -1852,6 +1858,7 @@ class PreviewFrameWorker(QThread):
         self.roi = roi
         self.mask_edits = mask_edits or []
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+        self.fp16 = fp16
 
     def run(self):
         tmp = None
@@ -1873,7 +1880,7 @@ class PreviewFrameWorker(QThread):
             self.status.emit("Running AI model...")
             img = Image.open(tmp)
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m),
-                                gpu_device=self.gpu_device)
+                                gpu_device=self.gpu_device, fp16=self.fp16)
 
             # Full compositing pipeline (mirrors ProcessingWorker)
             mask = engine.predict_mask(img, self.roi)
@@ -1922,7 +1929,7 @@ class ImageProcessWorker(QThread):
                  edge_softness=0, mask_shift=0, invert_mask=False,
                  spill_strength=0, spill_color='green', shadow_strength=0,
                  bg_color=None, bg_image_path=None, roi=None, mask_edits=None,
-                 gpu_device=-1):
+                 gpu_device=-1, fp16=False):
         super().__init__()
         self.input_path = input_path; self.output_path = output_path
         self.model_key = model_key; self.max_res = max_res
@@ -1932,6 +1939,7 @@ class ImageProcessWorker(QThread):
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
         self.roi = roi; self.mask_edits = mask_edits or []
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+        self.fp16 = fp16
 
     def run(self):
         try:
@@ -1949,7 +1957,7 @@ class ImageProcessWorker(QThread):
             self.status.emit("Loading AI model...")
             self.progress.emit(20)
             engine = get_engine(self.model_key, log_fn=self.log.emit,
-                                gpu_device=self.gpu_device)
+                                gpu_device=self.gpu_device, fp16=self.fp16)
             self.status.emit("Removing background...")
             self.progress.emit(40)
             mask = engine.predict_mask(img, self.roi)
@@ -2006,11 +2014,11 @@ class BenchmarkWorker(QThread):
     def __init__(self, input_path, model_key, max_res, edge_softness=0, mask_shift=0,
                  invert_mask=False, spill_strength=0, spill_color='green',
                  shadow_strength=0, bg_color=None, bg_image_path=None, roi=None, mask_edits=None,
-                 gpu_device=-1):
+                 gpu_device=-1, fp16=False):
         super().__init__()
         self.input_path = input_path; self.model_key = model_key
         self.max_res = max_res; self.edge_softness = edge_softness
-        self.mask_shift = mask_shift
+        self.mask_shift = mask_shift; self.fp16 = fp16
         self.invert_mask = invert_mask; self.spill_strength = spill_strength
         self.spill_color = spill_color; self.shadow_strength = shadow_strength
         self.bg_color = bg_color; self.bg_image_path = bg_image_path
@@ -2058,7 +2066,7 @@ class BenchmarkWorker(QThread):
 
             self.status.emit(f"Benchmark: running AI + compositing on {len(frames)} frames...")
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m),
-                                gpu_device=self.gpu_device)
+                                gpu_device=self.gpu_device, fp16=self.fp16)
 
             t0 = time.time()
             for fpath in frames:
@@ -2939,6 +2947,9 @@ class AlphaCutWindow(QMainWindow):
         self.spin_gpu = QSpinBox(); self.spin_gpu.setRange(-1, 16); self.spin_gpu.setValue(-1)
         self.spin_gpu.setSpecialValueText("Auto")
         gpu_row.addWidget(self.spin_gpu); sl.addLayout(gpu_row)
+        self.chk_fp16 = QCheckBox("FP16 inference (GPU speedup)")
+        self.chk_fp16.setToolTip("Use half-precision floating point on GPU — ~2x faster, minimal quality loss")
+        sl.addWidget(self.chk_fp16)
         self.chk_audio = QCheckBox(_tr("chk.keep_audio", "Keep original audio")); self.chk_audio.setChecked(True); sl.addWidget(self.chk_audio)
 
         # Naming pattern
@@ -3098,6 +3109,7 @@ class AlphaCutWindow(QMainWindow):
         self.sl_quality.setAccessibleName("Output quality")
         self.spin_res.setAccessibleName("Max resolution")
         self.spin_gpu.setAccessibleName("GPU device")
+        self.chk_fp16.setAccessibleName("FP16 half-precision inference")
         self.sl_edge.setAccessibleName("Edge softness")
         self.sl_shift.setAccessibleName("Mask shift")
         self.sl_temporal.setAccessibleName("Temporal smoothing")
@@ -3176,7 +3188,7 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            roi=roi, mask_edits=mask_edits)
+            roi=roi, mask_edits=mask_edits, fp16=self.chk_fp16.isChecked())
         self._benchmark_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._benchmark_worker.result.connect(self._benchmark_done)
         self._benchmark_worker.error.connect(self._benchmark_err)
@@ -3306,6 +3318,7 @@ class AlphaCutWindow(QMainWindow):
             'mask_shift': self.sl_shift.value(), 'temporal_smooth': self.sl_temporal.value(),
             'keep_audio': self.chk_audio.isChecked(), 'naming_index': self.combo_naming.currentIndex(),
             'frame_skip': self.sl_frame_skip.value(), 'gpu_device': self.spin_gpu.value(),
+            'fp16': self.chk_fp16.isChecked(),
             'invert_mask': self.chk_invert.isChecked(), 'spill_strength': self.sl_spill.value(),
             'spill_color_index': self.combo_spill.currentIndex(),
             'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex(),
@@ -3328,6 +3341,7 @@ class AlphaCutWindow(QMainWindow):
         if 'naming_index' in p: self.combo_naming.setCurrentIndex(min(p['naming_index'], self.combo_naming.count()-1))
         if 'frame_skip' in p: self.sl_frame_skip.setValue(p['frame_skip'])
         if 'gpu_device' in p: self.spin_gpu.setValue(max(self.spin_gpu.minimum(), min(int(p['gpu_device']), self.spin_gpu.maximum())))
+        if 'fp16' in p: self.chk_fp16.setChecked(p['fp16'])
         if 'invert_mask' in p: self.chk_invert.setChecked(p['invert_mask'])
         if 'spill_strength' in p: self.sl_spill.setValue(p['spill_strength'])
         if 'spill_color_index' in p: self.combo_spill.setCurrentIndex(min(p['spill_color_index'], self.combo_spill.count()-1))
@@ -3354,6 +3368,7 @@ class AlphaCutWindow(QMainWindow):
                 self.spin_gpu.setValue(max(self.spin_gpu.minimum(), min(gpu_device, self.spin_gpu.maximum())))
             except (TypeError, ValueError):
                 pass
+        if 'fp16' in s: self.chk_fp16.setChecked(s['fp16'])
         if 'invert_mask' in s: self.chk_invert.setChecked(s['invert_mask'])
         if 'spill_strength' in s: self.sl_spill.setValue(s['spill_strength'])
         if 'spill_color_index' in s: self.combo_spill.setCurrentIndex(min(s['spill_color_index'], self.combo_spill.count()-1))
@@ -3374,6 +3389,7 @@ class AlphaCutWindow(QMainWindow):
             'mask_shift': self.sl_shift.value(), 'temporal_smooth': self.sl_temporal.value(),
             'keep_audio': self.chk_audio.isChecked(), 'naming_index': self.combo_naming.currentIndex(),
             'frame_skip': self.sl_frame_skip.value(), 'gpu_device': self.spin_gpu.value(),
+            'fp16': self.chk_fp16.isChecked(),
             'invert_mask': self.chk_invert.isChecked(), 'spill_strength': self.sl_spill.value(),
             'spill_color_index': self.combo_spill.currentIndex(),
             'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex(),
@@ -3541,7 +3557,7 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            roi=roi, mask_edits=mask_edits)
+            roi=roi, mask_edits=mask_edits, fp16=self.chk_fp16.isChecked())
         self._preview_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._preview_worker.result.connect(self._preview_done)
         self._preview_worker.error.connect(self._preview_err)
@@ -3676,7 +3692,8 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            quality=self.sl_quality.value(), roi=roi, mask_edits=mask_edits)
+            quality=self.sl_quality.value(), roi=roi, mask_edits=mask_edits,
+            fp16=self.chk_fp16.isChecked())
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.progress.connect(self._update_tray_progress)
         self._worker.frame_info.connect(lambda c, t: self.lbl_frame.setText(f"Frame {c} / {t}"))
@@ -3702,7 +3719,7 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            roi=roi, mask_edits=mask_edits)
+            roi=roi, mask_edits=mask_edits, fp16=self.chk_fp16.isChecked())
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.progress.connect(self._update_tray_progress)
         self._worker.status.connect(self.lbl_status.setText)
@@ -3727,6 +3744,7 @@ class AlphaCutWindow(QMainWindow):
                          'audio': self.chk_audio.isChecked(), 'frame_skip': self.sl_frame_skip.value(),
                          'quality': self.sl_quality.value(),
                          'roi': roi, 'mask_edits': mask_edits,
+                         'fp16': self.chk_fp16.isChecked(),
                          **comp})
         self._begin_processing()
         self._batch_start_time = time.time()
@@ -3833,7 +3851,7 @@ def _cli_process_image(inp, out, model_key, args, bg_color):
             ratio = args.max_res / max(w, h)
             img = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
             print(f"  Scaled to {img.size[0]}x{img.size[1]}")
-        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device)
+        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device, fp16=args.fp16)
         mask = engine.predict_mask(img)
         if args.edge > 0 or args.shift != 0:
             mask = engine.refine_mask(mask, args.edge, args.shift, 0)
@@ -3939,7 +3957,7 @@ def run_cli(args):
             print()
             continue
 
-        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device)
+        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device, fp16=args.fp16)
         engine.reset_temporal()
         info = get_video_info(inp)
         if not info:
@@ -3954,7 +3972,7 @@ def run_cli(args):
             spill_strength=args.spill, spill_color=args.spill_color,
             shadow_strength=args.shadow, bg_color=bg_color,
             bg_image_path=args.bg_image, quality=args.quality,
-            gpu_device=args.gpu_device)
+            gpu_device=args.gpu_device, fp16=args.fp16)
         worker.log.connect(print)
         worker.status.connect(lambda s: print(f"  {s}"))
         worker.progress.connect(lambda p: print(f"  {p}%", end='\r') if p % 10 == 0 else None)
@@ -4022,7 +4040,7 @@ def run_pipe(args):
     print(f"PIPE_HEADER: {sw} {sh} {fps}", file=sys.stderr)
 
     engine = get_engine(model_key, log_fn=lambda m: print(m, file=sys.stderr),
-                        gpu_device=args.gpu_device)
+                        gpu_device=args.gpu_device, fp16=args.fp16)
     engine.reset_temporal()
 
     cmd = [ffmpeg, '-v', 'warning', '-i', inp, '-fps_mode', 'cfr']
@@ -4096,6 +4114,7 @@ def main():
     parser.add_argument('-y', '--overwrite', action='store_true', help='Overwrite output without confirmation')
     parser.add_argument('--gpu-device', type=int, default=-1,
                         help='GPU device index for inference (-1=auto, 0=first GPU, etc.)')
+    parser.add_argument('--fp16', action='store_true', help='Use FP16 half-precision on GPU (~2x faster, minimal quality loss)')
     parser.add_argument('--chroma-key', action='store_true', help='Use FFmpeg chroma-key instead of AI (for green/blue screen footage)')
     parser.add_argument('--pipe', action='store_true',
                         help='Pipe raw RGBA frames to stdout (for FFmpeg stdin pipelines). '
