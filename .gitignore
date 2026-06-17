@@ -10,6 +10,7 @@ build/
 .venv/
 venv/
 *.bak
+.pytest_cache/
 CLAUDE.md
 
 # Markdown files local-only (except README)
