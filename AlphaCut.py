@@ -134,10 +134,10 @@ from PyQt6.QtWidgets import (
     QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent, QMimeData
 from PyQt6.QtGui import (
     QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent, QPalette,
-    QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices
+    QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices, QDrag
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2327,6 +2327,40 @@ class JobTable(QTableWidget):
         self.setRowCount(0)
 
 
+class DragOutButton(QPushButton):
+    """Button that initiates a file drag when the user drags from it."""
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._file_path = None
+        self._drag_start = None
+
+    def set_file(self, path):
+        self._file_path = path
+        self.setToolTip(f"Drag to NLE: {os.path.basename(path)}" if path else "")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = e.position().toPoint()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if (self._drag_start is not None and self._file_path
+                and os.path.isfile(self._file_path)
+                and (e.position().toPoint() - self._drag_start).manhattanLength() > 10):
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setUrls([QUrl.fromLocalFile(self._file_path)])
+            drag.setMimeData(mime)
+            drag.exec(Qt.DropAction.CopyAction)
+            self._drag_start = None
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_start = None
+        super().mouseReleaseEvent(e)
+
+
 class NoScrollFilter(QObject):
     """Eats scroll-wheel events on combo boxes, sliders, and spin boxes
     so the left panel scrolls instead of accidentally changing values."""
@@ -2736,6 +2770,9 @@ class AlphaCutWindow(QMainWindow):
         self.btn_open_folder = QPushButton("Open Folder"); self.btn_open_folder.setObjectName("small")
         self.btn_open_folder.setVisible(False)
         self.btn_open_folder.clicked.connect(self._open_folder); out_row.addWidget(self.btn_open_folder)
+        self.btn_drag_out = DragOutButton("Drag to NLE")
+        self.btn_drag_out.setObjectName("small"); self.btn_drag_out.setVisible(False)
+        out_row.addWidget(self.btn_drag_out)
         ll.addLayout(out_row)
         ll.addStretch()
 
@@ -3089,7 +3126,7 @@ class AlphaCutWindow(QMainWindow):
         self.lbl_status.setText(f"Loaded: {os.path.basename(path)}")
         self.drop_zone.setText(os.path.basename(path))
         self.progress_bar.setValue(0); self.lbl_frame.setText("")
-        self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False)
+        self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False); self.btn_drag_out.setVisible(False)
         # Reset chroma state
         self._chroma_result = None
         self.lbl_chroma_hint.setVisible(False); self.chk_use_chroma.setVisible(False)
@@ -3327,7 +3364,7 @@ class AlphaCutWindow(QMainWindow):
         self.btn_benchmark.setEnabled(False); self.btn_cancel.setVisible(True)
         self.progress_bar.setValue(0); self._start_glow()
         self.lbl_status.setText("Starting..."); self.lbl_frame.setText("")
-        self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False)
+        self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False); self.btn_drag_out.setVisible(False)
         if self._tray: self._tray.show(); self._tray.setToolTip(f"{APP_NAME} — Processing...")
 
     def _cancel(self):
@@ -3339,7 +3376,7 @@ class AlphaCutWindow(QMainWindow):
         self._reset(); self._last_output = path
         self.lbl_status.setText(f"Done: {os.path.basename(path)}")
         self._log(f"\nOutput: {path}"); self._toast_msg(f"Done: {os.path.basename(path)}", 5000)
-        self.btn_copy_path.setVisible(True); self.btn_open_folder.setVisible(True)
+        self.btn_copy_path.setVisible(True); self.btn_open_folder.setVisible(True); self.btn_drag_out.setVisible(True); self.btn_drag_out.set_file(self._last_output)
         if self._tray and self._tray.isVisible():
             self._tray.showMessage(APP_NAME, f"Done: {os.path.basename(path)}", QSystemTrayIcon.MessageIcon.Information, 5000)
 
