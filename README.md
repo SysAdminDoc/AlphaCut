@@ -14,8 +14,9 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 ## Features
 
 **AI & Processing**
-- 8 AI Models — U2Net, ISNet, BiRefNet — from fast drafts to cinema-quality edges
-- 8 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, Animated WebP, Animated GIF, PNG sequences, green screen, grayscale matte, FG+Alpha pair
+- 10 AI Models — U2Net, ISNet, BiRefNet (6 variants) — from fast drafts to cinema-quality edges
+- 9 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, AV1, Animated WebP, Animated GIF, PNG sequences, green screen, grayscale matte, FG+Alpha pair
+- Single-Image Mode — drop any image for instant transparent PNG export
 - Chroma-Key Fallback — auto-detect green/blue screens; FFmpeg chroma-key for 10x speed boost
 - Pipelined I/O — parallel decode/infer/save threads for higher throughput
 - Frame Skip — process every Nth frame with mask reuse (up to 10x speedup)
@@ -104,7 +105,8 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 | `-i`, `--input` | — | Input video file(s) |
 | `-o`, `--output` | Auto-named | Output path |
 | `-m`, `--model` | `u2net_human_seg` | Model name (partial match) |
-| `-f`, `--format` | `mp4` | mp4, prores, webm, webp_anim, gif_anim, png_seq, greenscreen, matte, fg_alpha |
+| `-f`, `--format` | `mp4` | mp4, av1, prores, webm, webp_anim, gif_anim, png_seq, greenscreen, matte, fg_alpha |
+| `--gpu-device` | -1 (auto) | GPU device index for inference |
 | `--max-res` | 0 (original) | Max resolution |
 | `--edge` | 0 | Edge softness (0-100) |
 | `--shift` | 0 | Mask shift (-20 to +20) |
@@ -131,6 +133,8 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 | `isnet-anime` | Medium | Great | Anime / illustrations |
 | `BiRefNet-portrait` | Slow | Excellent | Portraits, hair detail |
 | `BiRefNet-general` | Slow | Excellent | **Best overall** |
+| `BiRefNet-general-lite` | Medium | Excellent | Fast + high quality |
+| `BiRefNet-matting` | Slow | Excellent | Hair and transparent edges |
 
 ## Project Planning
 

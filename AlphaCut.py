@@ -213,6 +213,7 @@ MODELS = _load_model_registry()
 
 OUTPUT_FORMATS = {
     "MP4 H.264 (.mp4) — Smallest": "mp4",
+    "MP4 AV1 (.mp4) — Best Compression": "av1",
     "WebM VP9 + Alpha (.webm)": "webm",
     "Animated WebP (.webp) — Short Clips": "webp_anim",
     "Animated GIF (.gif) — Web Compatible": "gif_anim",
@@ -331,7 +332,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4'}
+    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
     ext = ext_map.get(fmt, '.mov')
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
@@ -862,7 +863,7 @@ def get_video_info(filepath):
 def estimate_output_size(info, fmt):
     if not info: return 0
     px = info['width'] * info['height']; frames = info['total_frames']
-    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
+    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'av1': px*0.06, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
 def pil_to_qimage(pil_img):
@@ -1487,7 +1488,7 @@ class ProcessingWorker(QThread):
 
         first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'fg_alpha': '.mp4'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'fg_alpha': '.mp4', 'av1': '.mp4'}
         out_file = os.path.splitext(self.output_path)[0] + ext_map.get(fmt, '.mov')
 
         # Quality mapping per format:
@@ -1519,6 +1520,12 @@ class ProcessingWorker(QThread):
                    f"color=c=#00ff00:s={fw}x{fh}:r={fps}[bg];[bg][0:v]overlay=shortest=1",
                    '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p']
             self.log.emit(f"Greenscreen quality: CRF={crf}")
+        elif fmt == 'av1':
+            crf = int(40 - (q / 100) * 22)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'libsvtav1', '-crf', str(crf), '-preset', '6', '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart']
+            self.log.emit(f"AV1 quality: CRF={crf}")
         elif fmt == 'matte':
             cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat, '-vf', 'format=gray',
                    '-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le']
@@ -1526,7 +1533,7 @@ class ProcessingWorker(QThread):
 
         if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte', 'webp_anim', 'gif_anim'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
-                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4') else 'copy'), '-shortest']
+                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4', 'av1') else 'copy'), '-shortest']
         # Add -progress pipe:1 for real-time encode progress
         cmd += ['-progress', 'pipe:1', out_file]
         self.log.emit(f"Encoding: {fmt}...")
@@ -1619,7 +1626,7 @@ class BatchWorker(QThread):
                 else:
                     # Check if output exists
                     out = job['output']
-                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4'}
+                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
                     if job['format'] != 'png_seq':
                         out = os.path.splitext(out)[0] + ext_map.get(job['format'], '.mov')
                     if os.path.exists(out):
@@ -1684,7 +1691,7 @@ class ChromaKeyWorker(QThread):
         # Build output path with correct extension
         _ext_map = {'mp4': '.mp4', 'webm': '.webm', 'prores': '.mov',
                     'matte': '.mov', 'png_seq': '', 'gif_anim': '.gif',
-                    'webp_anim': '.webp', 'fg_alpha': '.mp4'}
+                    'webp_anim': '.webp', 'fg_alpha': '.mp4', 'av1': '.mp4'}
         out = os.path.splitext(self.output_path)[0] + _ext_map.get(fmt, '.mov')
 
         self.status.emit(f"Chroma-key removal ({self.chroma_color}) → {fmt}…")
@@ -3477,7 +3484,7 @@ class AlphaCutWindow(QMainWindow):
             self._start_single(model_key, fmt, pattern)
 
     def _start_single(self, model_key, fmt, pattern):
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
         if fmt == 'png_seq':
             out = QFileDialog.getExistingDirectory(self, "Select Output Folder")
             if not out: return

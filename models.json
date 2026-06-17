@@ -97,6 +97,30 @@
       "sigmoid": true,
       "license": "MIT",
       "description": "Excellent for portraits and hair detail"
+    },
+    {
+      "name": "BiRefNet-general-lite",
+      "label": "BiRefNet-general-lite (Fast + High Quality)",
+      "file": "birefnet-general-lite.onnx",
+      "url": "{base_url}/BiRefNet-general-lite_epoch_232.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": true,
+      "license": "MIT",
+      "description": "Lightweight BiRefNet — faster inference with near-best quality"
+    },
+    {
+      "name": "BiRefNet-matting",
+      "label": "BiRefNet-matting (Alpha Matting)",
+      "file": "birefnet-matting.onnx",
+      "url": "{base_url}/BiRefNet-matting-epoch_100.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": true,
+      "license": "MIT",
+      "description": "Trimap-free alpha matting — best for hair and transparent edges"
     }
   ]
 }
