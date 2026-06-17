@@ -15,13 +15,15 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 
 **AI & Processing**
 - 8 AI Models — U2Net, ISNet, BiRefNet — from fast drafts to cinema-quality edges
-- 7 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, Animated WebP, Animated GIF, PNG sequences, green screen, grayscale matte
+- 8 Output Formats — ProRes 4444+Alpha, WebM VP9+Alpha, Animated WebP, Animated GIF, PNG sequences, green screen, grayscale matte, FG+Alpha pair
 - Chroma-Key Fallback — auto-detect green/blue screens; FFmpeg chroma-key for 10x speed boost
 - Pipelined I/O — parallel decode/infer/save threads for higher throughput
 - Frame Skip — process every Nth frame with mask reuse (up to 10x speedup)
 - Benchmark Mode — test 10 samples to estimate total processing time
 - Memory Monitoring — live RAM % during processing with warnings
 - Resume Interrupted Jobs — progress saved every 50 frames, auto-resumes on restart
+- Pipe Mode — `--pipe` streams raw RGBA to stdout for FFmpeg/scriptable pipelines
+- Model Registry — `models.json` declares model name, URL, hash, input size, and license
 
 **Advanced Compositing**
 - ROI Selection — crop AI inference to a preview-selected subject region
@@ -34,6 +36,8 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 **Batch & Workflow**
 - Batch Queue — drop multiple files or a folder, process sequentially
 - Job Table — per-file thumbnails, status, progress %, and output path
+- Thumbnail Grid — visual grid preview of all batch files before processing
+- Drag-Out Export — drag output file directly into NLE timelines
 - CLI Mode — full argparse interface for headless/scripted operation (with auto chroma-key detection)
 - Auto-Naming — configurable output patterns ({name}, {model}, {format}, {date})
 - Export Presets — save/load all settings including compositing
@@ -48,6 +52,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video background
 - Update Checker — checks GitHub releases on startup and on demand
 - Model Manager — view/delete cached ONNX models with size info
 - Settings Persistence — all preferences saved between sessions
+- Localization Ready — i18n scaffold with `locale_template.json` for community translations
 
 ## Requirements
 
@@ -81,6 +86,12 @@ python AlphaCut.py -i vid1.mp4 vid2.mp4 vid3.mp4 -f webm --frame-skip 3
 
 # CLI — invert mask + custom background
 python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
+
+# CLI — FG + Alpha pair (for NLEs without alpha support)
+python AlphaCut.py -i video.mp4 -f fg_alpha -m BiRefNet
+
+# CLI — pipe raw RGBA into FFmpeg
+python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i - -c:v libvpx-vp9 out.webm
 ```
 
 ## CLI Reference
@@ -90,7 +101,7 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 | `-i`, `--input` | — | Input video file(s) |
 | `-o`, `--output` | Auto-named | Output path |
 | `-m`, `--model` | `u2net_human_seg` | Model name (partial match) |
-| `-f`, `--format` | `mp4` | mp4, prores, webm, webp_anim, gif_anim, png_seq, greenscreen, matte |
+| `-f`, `--format` | `mp4` | mp4, prores, webm, webp_anim, gif_anim, png_seq, greenscreen, matte, fg_alpha |
 | `--max-res` | 0 (original) | Max resolution |
 | `--edge` | 0 | Edge softness (0-100) |
 | `--shift` | 0 | Mask shift (-20 to +20) |
@@ -103,6 +114,7 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 | `--bg-color` | — | Background R,G,B |
 | `--bg-image` | — | Background image path |
 | `--no-audio` | — | Strip audio |
+| `--pipe` | — | Stream raw RGBA to stdout for FFmpeg pipelines |
 
 ## AI Models
 
@@ -120,12 +132,13 @@ python AlphaCut.py -i video.mp4 -f prores --invert --bg-color 0,0,0
 ## Project Planning
 
 - `ROADMAP.md` - active and proposed work.
+- `Roadmap_Blocked.md` - items blocked by external dependencies or research.
 - `RESEARCH.md` - research notes that inform future roadmap candidates.
 
 ## Architecture
 
 ```
-AlphaCut.py (single file, ~3,100 lines)
+AlphaCut.py (single file, ~3,700 lines)
 ├── Crash Handler + Bootstrap (auto-installs all deps)
 ├── AlphaCutEngine — ONNX inference + mask refinement
 │   ├── Edge refinement, temporal smoothing
@@ -145,7 +158,12 @@ AlphaCut.py (single file, ~3,100 lines)
 ├── ModelManagerDialog — Download/delete models
 ├── SplitPreviewWidget — Before/after comparison
 │   └── ROI selection + manual mask paint overlays
+├── DragOutButton — Drag output file to NLE
+├── ThumbnailGrid — Visual batch file preview grid
 ├── ToastWidget — Floating notifications
 ├── CLI — Full argparse headless interface
+├── Pipe Mode — Raw RGBA stdout for FFmpeg pipelines
+├── i18n — _tr() scaffold + locale_template.json
+├── models.json — External model registry
 └── Settings/Presets — JSON persistence
 ```
