@@ -119,6 +119,7 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 | `--bg-color` | — | Background R,G,B |
 | `--bg-image` | — | Background image path |
 | `--no-audio` | — | Strip audio |
+| `-y`, `--overwrite` | — | Overwrite output without confirmation |
 | `--pipe` | — | Stream raw RGBA to stdout for FFmpeg pipelines |
 
 ## AI Models
