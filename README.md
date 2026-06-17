@@ -1,8 +1,8 @@
 # AlphaCut v1.5.0
 
-**Video background removal & compositing.**
+**Video & image background removal + compositing.**
 
-AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
+AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, batch processing.
 
 ![Version](https://img.shields.io/badge/Version-v1.5.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
@@ -72,7 +72,10 @@ Windows releases include `AlphaCut-Setup-<version>.exe`, an Inno Setup installer
 # GUI
 python AlphaCut.py
 
-# CLI — basic
+# CLI — single image (outputs transparent PNG)
+python AlphaCut.py -i photo.jpg -m BiRefNet
+
+# CLI — video
 python AlphaCut.py -i video.mp4 -f prores -m BiRefNet
 
 # CLI — background replacement

@@ -1889,6 +1889,92 @@ class PreviewFrameWorker(QThread):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# IMAGE PROCESS WORKER — single-image background removal
+# ═══════════════════════════════════════════════════════════════════════════════
+class ImageProcessWorker(QThread):
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+    log = pyqtSignal(str)
+    preview = pyqtSignal(object)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, input_path, output_path, model_key, max_res=0,
+                 edge_softness=0, mask_shift=0, invert_mask=False,
+                 spill_strength=0, spill_color='green', shadow_strength=0,
+                 bg_color=None, bg_image_path=None, roi=None, mask_edits=None,
+                 gpu_device=-1):
+        super().__init__()
+        self.input_path = input_path; self.output_path = output_path
+        self.model_key = model_key; self.max_res = max_res
+        self.edge_softness = edge_softness; self.mask_shift = mask_shift
+        self.invert_mask = invert_mask; self.spill_strength = spill_strength
+        self.spill_color = spill_color; self.shadow_strength = shadow_strength
+        self.bg_color = bg_color; self.bg_image_path = bg_image_path
+        self.roi = roi; self.mask_edits = mask_edits or []
+        self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+
+    def run(self):
+        try:
+            self.status.emit("Loading image...")
+            self.progress.emit(10)
+            img = Image.open(self.input_path)
+            img.load()
+            w, h = img.size
+            self.log.emit(f"Image: {w}x{h} | {os.path.basename(self.input_path)}")
+            if self.max_res > 0 and max(w, h) > self.max_res:
+                ratio = self.max_res / max(w, h)
+                nw, nh = int(w * ratio), int(h * ratio)
+                img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+                self.log.emit(f"Scaled to {nw}x{nh}")
+            self.status.emit("Loading AI model...")
+            self.progress.emit(20)
+            engine = get_engine(self.model_key, log_fn=self.log.emit,
+                                gpu_device=self.gpu_device)
+            self.status.emit("Removing background...")
+            self.progress.emit(40)
+            mask = engine.predict_mask(img, self.roi)
+            if self.edge_softness > 0 or self.mask_shift != 0:
+                mask = engine.refine_mask(mask, self.edge_softness, self.mask_shift, 0)
+            if self.mask_edits:
+                mask = AlphaCutEngine.apply_mask_edits(mask, self.mask_edits)
+            current_mask = mask.copy()
+            if self.shadow_strength > 0:
+                current_mask = AlphaCutEngine.preserve_shadows(img, current_mask, self.shadow_strength)
+            if self.invert_mask:
+                current_mask = AlphaCutEngine.invert_mask(current_mask)
+            self.progress.emit(70)
+            src = img
+            if self.spill_strength > 0:
+                src = AlphaCutEngine.suppress_spill(src, current_mask, self.spill_strength, self.spill_color)
+            fg = src.convert('RGBA')
+            result = Image.composite(fg, Image.new('RGBA', fg.size, 0), current_mask)
+            bg_image = None
+            if self.bg_image_path and os.path.isfile(self.bg_image_path):
+                try:
+                    bg_image = Image.open(self.bg_image_path); bg_image.load()
+                except Exception:
+                    pass
+            if self.bg_color is not None or bg_image is not None:
+                result = AlphaCutEngine.composite_on_background(result, bg_color=self.bg_color, bg_image=bg_image)
+            self.status.emit("Saving...")
+            self.progress.emit(90)
+            out = self.output_path
+            if not out.lower().endswith('.png'):
+                out = os.path.splitext(out)[0] + '.png'
+            result.save(out, 'PNG')
+            try:
+                self.preview.emit(pil_to_qimage(result))
+            except Exception:
+                pass
+            self.progress.emit(100)
+            self.log.emit(f"Output: {out} ({os.path.getsize(out)/(1024*1024):.1f} MB)")
+            self.finished.emit(out)
+        except Exception as e:
+            self.error.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # BENCHMARK WORKER — estimate processing time from N sample frames
 # ═══════════════════════════════════════════════════════════════════════════════
 class BenchmarkWorker(QThread):
@@ -2005,7 +2091,7 @@ class DropZone(QLabel):
         super().__init__()
         self.setAcceptDrops(True); self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumHeight(60); self._set_style(False)
-        self.setText(_tr("drop.hint", "Drop video file(s) here or click Browse"))
+        self.setText(_tr("drop.hint", "Drop video/image file(s) here or click Browse"))
 
     def _set_style(self, active):
         bc = '#6c5ce7' if active else '#1e2230'
@@ -2013,12 +2099,16 @@ class DropZone(QLabel):
         tc = '#a855f7' if active else '#3d4455'
         self.setStyleSheet(f"QLabel {{ background-color: {bg}; border: 2px dashed {bc}; border-radius: 12px; color: {tc}; font-size: 12px; padding: 10px; }}")
 
+    @staticmethod
+    def _is_supported(ext):
+        return ext in VIDEO_EXTENSIONS or ext in IMAGE_EXTENSIONS
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     ext = os.path.splitext(url.toLocalFile())[1].lower()
-                    if ext in VIDEO_EXTENSIONS or os.path.isdir(url.toLocalFile()):
+                    if self._is_supported(ext) or os.path.isdir(url.toLocalFile()):
                         event.acceptProposedAction(); self._set_style(True); return
         event.ignore()
 
@@ -2032,9 +2122,9 @@ class DropZone(QLabel):
                 p = url.toLocalFile()
                 if os.path.isdir(p):
                     for f in sorted(os.listdir(p)):
-                        if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS:
+                        if self._is_supported(os.path.splitext(f)[1].lower()):
                             paths.append(os.path.join(p, f))
-                elif os.path.splitext(p)[1].lower() in VIDEO_EXTENSIONS:
+                elif self._is_supported(os.path.splitext(p)[1].lower()):
                     paths.append(p)
         if len(paths) == 1:
             self.file_dropped.emit(paths[0])
@@ -2665,7 +2755,7 @@ class AlphaCutWindow(QMainWindow):
         self.setWindowIcon(get_app_icon())
         self._worker = None; self._batch_worker = None; self._preview_worker = None
         self._benchmark_worker = None
-        self._input_path = None; self._video_info = None
+        self._input_path = None; self._video_info = None; self._is_image = False
         self._last_output = None; self._batch_jobs = []
         self._bg_custom_color = None; self._bg_image_path = None
         self._update_checker = None
@@ -3187,13 +3277,17 @@ class AlphaCutWindow(QMainWindow):
 
     # ── Input ──
     def _browse(self):
-        exts = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
-        path, _ = QFileDialog.getOpenFileName(self, "Select Video", "", f"Video ({exts});;All (*)")
+        v_exts = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
+        i_exts = " ".join(f"*{e}" for e in IMAGE_EXTENSIONS)
+        path, _ = QFileDialog.getOpenFileName(self, "Select Video or Image", "",
+                                               f"Media ({v_exts} {i_exts});;Video ({v_exts});;Images ({i_exts});;All (*)")
         if path: self._load_video(path)
 
     def _browse_batch(self):
-        exts = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select Videos", "", f"Video ({exts});;All (*)")
+        v_exts = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
+        i_exts = " ".join(f"*{e}" for e in IMAGE_EXTENSIONS)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Select Files", "",
+                                                 f"Media ({v_exts} {i_exts});;All (*)")
         if paths:
             if len(paths) == 1: self._load_video(paths[0])
             else: self._load_batch(paths)
@@ -3212,6 +3306,8 @@ class AlphaCutWindow(QMainWindow):
     def _load_video(self, path):
         if not os.path.isfile(path): return
         self._input_path = path; self._batch_jobs = []
+        ext = os.path.splitext(path)[1].lower()
+        self._is_image = ext in IMAGE_EXTENSIONS
         self.grp_batch.setVisible(False); self.job_table.clear_all(); self.thumb_grid.clear_all()
         self.preview.clear_mask_edits()
         add_recent_file(path)
@@ -3228,6 +3324,24 @@ class AlphaCutWindow(QMainWindow):
             self._chroma_detect_worker.cancel()
             self._chroma_detect_worker.wait()
             self._chroma_detect_worker = None
+
+        if self._is_image:
+            try:
+                im = Image.open(path); w, h = im.size; im.close()
+                self.s_res._val.setText(f"{w}x{h}")
+                self.s_fps._val.setText("—"); self.s_dur._val.setText("image")
+                self.s_frm._val.setText("1"); self.info_w.setVisible(True)
+                self._video_info = None
+            except Exception:
+                self.info_w.setVisible(False); self._video_info = None
+            self.lbl_estimate.setText("→ PNG")
+            self.chk_audio.setEnabled(False); self.chk_audio.setChecked(False)
+            self.sl_scrub.setEnabled(False)
+            self.btn_start.setEnabled(True); self.btn_preview.setEnabled(True)
+            self.btn_benchmark.setEnabled(False)
+            self._update_res_suggestion()
+            return
+
         info = get_video_info(path); self._video_info = info
         if info:
             self.s_res._val.setText(f"{info['width']}x{info['height']}")
@@ -3236,7 +3350,6 @@ class AlphaCutWindow(QMainWindow):
             self._update_estimate()
             self.chk_audio.setEnabled(info.get('has_audio', False))
             if not info.get('has_audio'): self.chk_audio.setChecked(False)
-            # Start chroma-key detection in background
             self._chroma_detect_worker = ChromaDetectWorker(path)
             self._chroma_detect_worker.result.connect(self._chroma_detected)
             self._chroma_detect_worker.start()
@@ -3348,12 +3461,16 @@ class AlphaCutWindow(QMainWindow):
 
     # ── Processing ──
     def _start(self):
-        if not self._input_path or not find_ffmpeg(): return
+        if not self._input_path: return
+        if not self._is_image and not find_ffmpeg(): return
         self._save_settings()
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
         fmt = OUTPUT_FORMATS[list(OUTPUT_FORMATS.keys())[self.combo_fmt.currentIndex()]]
         pattern = self.combo_naming.currentText()
 
+        if self._is_image:
+            self._start_image(model_key)
+            return
         if self._batch_jobs:
             self._start_batch(model_key, fmt, pattern)
         else:
@@ -3419,6 +3536,30 @@ class AlphaCutWindow(QMainWindow):
         self._worker.log.connect(self._log)
         self._worker.preview.connect(self.preview.set_frame)
         self._worker.memory_update.connect(self._update_memory_display)
+        self._worker.finished.connect(self._done)
+        self._worker.error.connect(self._err)
+        self._worker.start()
+
+    def _start_image(self, model_key):
+        base = os.path.splitext(os.path.basename(self._input_path))[0]
+        default = os.path.join(os.path.dirname(self._input_path), f"{base}_alphacut.png")
+        out, _ = QFileDialog.getSaveFileName(self, "Save Output", default, "PNG (*.png);;All (*)")
+        if not out: return
+        self._begin_processing()
+        comp = self._get_compositing_params()
+        roi, mask_edits = self._mask_controls()
+        self._worker = ImageProcessWorker(
+            self._input_path, out, model_key, self.spin_res.value(),
+            edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
+            invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
+            spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
+            bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
+            roi=roi, mask_edits=mask_edits)
+        self._worker.progress.connect(self.progress_bar.setValue)
+        self._worker.progress.connect(self._update_tray_progress)
+        self._worker.status.connect(self.lbl_status.setText)
+        self._worker.log.connect(self._log)
+        self._worker.preview.connect(self.preview.set_frame)
         self._worker.finished.connect(self._done)
         self._worker.error.connect(self._err)
         self._worker.start()
@@ -3517,25 +3658,82 @@ class AlphaCutWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI MODE
 # ═══════════════════════════════════════════════════════════════════════════════
+def _cli_process_image(inp, out, model_key, args, bg_color):
+    """Process a single image in CLI mode."""
+    if not out.lower().endswith('.png'):
+        out = os.path.splitext(out)[0] + '.png'
+    print(f"\nProcessing image: {inp}")
+    print(f"  Model: {model_key}")
+    print(f"  Output: {out}")
+    try:
+        img = Image.open(inp); img.load()
+        w, h = img.size
+        print(f"  Size: {w}x{h}")
+        if args.max_res > 0 and max(w, h) > args.max_res:
+            ratio = args.max_res / max(w, h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
+            print(f"  Scaled to {img.size[0]}x{img.size[1]}")
+        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device)
+        mask = engine.predict_mask(img)
+        if args.edge > 0 or args.shift != 0:
+            mask = engine.refine_mask(mask, args.edge, args.shift, 0)
+        if args.invert:
+            mask = AlphaCutEngine.invert_mask(mask)
+        if args.shadow > 0:
+            mask = AlphaCutEngine.preserve_shadows(img, mask, args.shadow)
+        src = img
+        if args.spill > 0:
+            src = AlphaCutEngine.suppress_spill(src, mask, args.spill, args.spill_color)
+        fg = src.convert('RGBA')
+        result = Image.composite(fg, Image.new('RGBA', fg.size, 0), mask)
+        bg_image = None
+        if args.bg_image and os.path.isfile(args.bg_image):
+            try: bg_image = Image.open(args.bg_image); bg_image.load()
+            except Exception: pass
+        if bg_color is not None or bg_image is not None:
+            result = AlphaCutEngine.composite_on_background(result, bg_color=bg_color, bg_image=bg_image)
+        result.save(out, 'PNG')
+        print(f"  Done: {out} ({os.path.getsize(out)/(1024*1024):.1f} MB)")
+    except Exception as e:
+        print(f"  ERROR: {e}")
+
+
 def run_cli(args):
     """Headless CLI processing."""
-    # Qt signals require a QCoreApplication even in CLI mode
     from PyQt6.QtCore import QCoreApplication
     cli_app = QCoreApplication.instance() or QCoreApplication(sys.argv)
 
-    if not find_ffmpeg():
-        print("ERROR: FFmpeg not found."); sys.exit(1)
     model_names = list(MODELS.keys())
-    model_key = model_names[0]  # default
+    model_key = model_names[0]
     for i, name in enumerate(model_names):
         if args.model.lower() in name.lower():
             model_key = name; break
     fmt = args.format
     if fmt not in OUTPUT_FORMATS.values():
         print(f"Unknown format: {fmt}. Options: {', '.join(OUTPUT_FORMATS.values())}"); sys.exit(1)
+
+    # Parse bg_color once
+    bg_color = None
+    if args.bg_color:
+        try:
+            parts = [int(x.strip()) for x in args.bg_color.split(',')]
+            if len(parts) == 3: bg_color = tuple(parts)
+        except ValueError:
+            print(f"Invalid --bg-color: {args.bg_color} (use R,G,B format)")
+
     for inp in args.input:
         if not os.path.isfile(inp):
             print(f"File not found: {inp}"); continue
+
+        # Detect image input
+        ext = os.path.splitext(inp)[1].lower()
+        if ext in IMAGE_EXTENSIONS:
+            out = args.output if args.output else os.path.splitext(inp)[0] + '_alphacut.png'
+            _cli_process_image(inp, out, model_key, args, bg_color)
+            continue
+
+        if not find_ffmpeg():
+            print("ERROR: FFmpeg not found — required for video processing."); sys.exit(1)
         if args.output:
             out = args.output
         else:
@@ -3553,16 +3751,6 @@ def run_cli(args):
                 print(f"  Chroma-key detected: {chroma_result['color']}-screen")
             else:
                 print(f"  --chroma-key set but no solid background detected; using AI")
-
-        # Parse bg_color
-        bg_color = None
-        if args.bg_color:
-            try:
-                parts = [int(x.strip()) for x in args.bg_color.split(',')]
-                if len(parts) == 3:
-                    bg_color = tuple(parts)
-            except ValueError:
-                print(f"  Invalid --bg-color: {args.bg_color} (use R,G,B format)")
 
         # Use chroma-key if detected
         if chroma_result and args.chroma_key:
