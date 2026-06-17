@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "base_url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0",
+  "models": [
+    {
+      "name": "u2net_human_seg",
+      "label": "u2net_human_seg (People — Recommended)",
+      "file": "u2net_human_seg.onnx",
+      "url": "{base_url}/u2net_human_seg.onnx",
+      "input_size": [320, 320],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": false,
+      "license": "Apache-2.0",
+      "description": "Fast, high-quality human segmentation"
+    },
+    {
+      "name": "u2net",
+      "label": "u2net (General Purpose)",
+      "file": "u2net.onnx",
+      "url": "{base_url}/u2net.onnx",
+      "input_size": [320, 320],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": false,
+      "license": "Apache-2.0",
+      "description": "General-purpose salient object detection"
+    },
+    {
+      "name": "u2netp",
+      "label": "u2netp (Lightweight — Fastest)",
+      "file": "u2netp.onnx",
+      "url": "{base_url}/u2netp.onnx",
+      "input_size": [320, 320],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": false,
+      "license": "Apache-2.0",
+      "description": "Lightweight U2Net for fast previews"
+    },
+    {
+      "name": "silueta",
+      "label": "silueta (People — Lightweight)",
+      "file": "silueta.onnx",
+      "url": "{base_url}/silueta.onnx",
+      "input_size": [320, 320],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": false,
+      "license": "Apache-2.0",
+      "description": "Lightweight human segmentation"
+    },
+    {
+      "name": "isnet-general-use",
+      "label": "isnet-general-use (General — High Quality)",
+      "file": "isnet-general-use.onnx",
+      "url": "{base_url}/isnet-general-use.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.5, 0.5, 0.5],
+      "std": [1.0, 1.0, 1.0],
+      "sigmoid": false,
+      "license": "Apache-2.0",
+      "description": "High-quality general object segmentation"
+    },
+    {
+      "name": "isnet-anime",
+      "label": "isnet-anime (Anime / Illustration)",
+      "file": "isnet-anime.onnx",
+      "url": "{base_url}/isnet-anime.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.5, 0.5, 0.5],
+      "std": [1.0, 1.0, 1.0],
+      "sigmoid": false,
+      "license": "Apache-2.0",
+      "description": "Optimized for anime and illustration styles"
+    },
+    {
+      "name": "BiRefNet-general",
+      "label": "BiRefNet-general (Best Quality — Slow)",
+      "file": "birefnet-general.onnx",
+      "url": "{base_url}/BiRefNet-general-epoch_244.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": true,
+      "license": "MIT",
+      "description": "Best overall quality, slower inference"
+    },
+    {
+      "name": "BiRefNet-portrait",
+      "label": "BiRefNet-portrait (Portraits — High Quality)",
+      "file": "birefnet-portrait.onnx",
+      "url": "{base_url}/BiRefNet-portrait-epoch_150.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": true,
+      "license": "MIT",
+      "description": "Excellent for portraits and hair detail"
+    }
+  ]
+}

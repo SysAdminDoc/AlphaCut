@@ -153,40 +153,62 @@ GITHUB_REPO = "SysAdminDoc/AlphaCut"
 GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 MODEL_BASE = "https://github.com/danielgatis/rembg/releases/download/v0.0.0"
-MODELS = {
-    "u2net_human_seg (People — Recommended)": {
-        "file": "u2net_human_seg.onnx", "url": f"{MODEL_BASE}/u2net_human_seg.onnx",
-        "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
-    },
-    "u2net (General Purpose)": {
-        "file": "u2net.onnx", "url": f"{MODEL_BASE}/u2net.onnx",
-        "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
-    },
-    "u2netp (Lightweight — Fastest)": {
-        "file": "u2netp.onnx", "url": f"{MODEL_BASE}/u2netp.onnx",
-        "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
-    },
-    "silueta (People — Lightweight)": {
-        "file": "silueta.onnx", "url": f"{MODEL_BASE}/silueta.onnx",
-        "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
-    },
-    "isnet-general-use (General — High Quality)": {
-        "file": "isnet-general-use.onnx", "url": f"{MODEL_BASE}/isnet-general-use.onnx",
-        "size": (1024, 1024), "mean": (0.5, 0.5, 0.5), "std": (1.0, 1.0, 1.0), "sigmoid": False,
-    },
-    "isnet-anime (Anime / Illustration)": {
-        "file": "isnet-anime.onnx", "url": f"{MODEL_BASE}/isnet-anime.onnx",
-        "size": (1024, 1024), "mean": (0.5, 0.5, 0.5), "std": (1.0, 1.0, 1.0), "sigmoid": False,
-    },
-    "BiRefNet-general (Best Quality — Slow)": {
-        "file": "birefnet-general.onnx", "url": f"{MODEL_BASE}/BiRefNet-general-epoch_244.onnx",
-        "size": (1024, 1024), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": True,
-    },
-    "BiRefNet-portrait (Portraits — High Quality)": {
-        "file": "birefnet-portrait.onnx", "url": f"{MODEL_BASE}/BiRefNet-portrait-epoch_150.onnx",
-        "size": (1024, 1024), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": True,
-    },
-}
+
+def _load_model_registry():
+    """Load model registry from models.json, falling back to hardcoded defaults."""
+    registry_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
+    try:
+        with open(registry_path, 'r') as f:
+            data = json.load(f)
+        base = data.get('base_url', MODEL_BASE)
+        models = {}
+        for m in data.get('models', []):
+            url = m['url'].replace('{base_url}', base)
+            models[m['label']] = {
+                'file': m['file'], 'url': url,
+                'size': tuple(m['input_size']), 'mean': tuple(m['mean']),
+                'std': tuple(m['std']), 'sigmoid': m.get('sigmoid', False),
+            }
+        if models:
+            return models
+    except Exception:
+        pass
+    return {
+        "u2net_human_seg (People — Recommended)": {
+            "file": "u2net_human_seg.onnx", "url": f"{MODEL_BASE}/u2net_human_seg.onnx",
+            "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+        },
+        "u2net (General Purpose)": {
+            "file": "u2net.onnx", "url": f"{MODEL_BASE}/u2net.onnx",
+            "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+        },
+        "u2netp (Lightweight — Fastest)": {
+            "file": "u2netp.onnx", "url": f"{MODEL_BASE}/u2netp.onnx",
+            "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+        },
+        "silueta (People — Lightweight)": {
+            "file": "silueta.onnx", "url": f"{MODEL_BASE}/silueta.onnx",
+            "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+        },
+        "isnet-general-use (General — High Quality)": {
+            "file": "isnet-general-use.onnx", "url": f"{MODEL_BASE}/isnet-general-use.onnx",
+            "size": (1024, 1024), "mean": (0.5, 0.5, 0.5), "std": (1.0, 1.0, 1.0), "sigmoid": False,
+        },
+        "isnet-anime (Anime / Illustration)": {
+            "file": "isnet-anime.onnx", "url": f"{MODEL_BASE}/isnet-anime.onnx",
+            "size": (1024, 1024), "mean": (0.5, 0.5, 0.5), "std": (1.0, 1.0, 1.0), "sigmoid": False,
+        },
+        "BiRefNet-general (Best Quality — Slow)": {
+            "file": "birefnet-general.onnx", "url": f"{MODEL_BASE}/BiRefNet-general-epoch_244.onnx",
+            "size": (1024, 1024), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": True,
+        },
+        "BiRefNet-portrait (Portraits — High Quality)": {
+            "file": "birefnet-portrait.onnx", "url": f"{MODEL_BASE}/BiRefNet-portrait-epoch_150.onnx",
+            "size": (1024, 1024), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": True,
+        },
+    }
+
+MODELS = _load_model_registry()
 
 OUTPUT_FORMATS = {
     "MP4 H.264 (.mp4) — Smallest": "mp4",
