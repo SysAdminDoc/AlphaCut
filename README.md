@@ -67,6 +67,13 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 
 Windows releases include `AlphaCut-Setup-<version>.exe`, an Inno Setup installer that installs AlphaCut per user and creates Start Menu shortcuts. The portable `AlphaCut-windows.exe` is still published for users who prefer a standalone executable.
 
+### Docker
+
+```bash
+docker build -t alphacut .
+docker run --rm -v $(pwd):/data alphacut -i /data/video.mp4 -f webm -o /data/output.webm
+```
+
 ## Quick Start
 
 ```bash
