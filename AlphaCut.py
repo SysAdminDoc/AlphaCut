@@ -1156,6 +1156,7 @@ class ProcessingWorker(QThread):
             save_q = queue.Queue(maxsize=8)    # (index, PIL result) to save
             read_done = threading.Event()
             save_errors = []
+            save_errors_lock = threading.Lock()
 
             def _reader_thread():
                 """Pre-reads BMP frames into PIL Images ahead of inference."""
@@ -1182,7 +1183,8 @@ class ProcessingWorker(QThread):
                         try:
                             result.save(os.path.join(frames_out, f'frame_{idx+1:06d}.tiff'), 'TIFF')
                         except Exception as e:
-                            save_errors.append(f"Save error frame {idx}: {e}")
+                            with save_errors_lock:
+                                save_errors.append(f"Save error frame {idx}: {e}")
                         save_q.task_done()
                     except queue.Empty:
                         if self._cancelled:
@@ -1389,14 +1391,18 @@ class ProcessingWorker(QThread):
                       '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
                       '-movflags', '+faststart', fg_out]
             self.status.emit("Encoding foreground...")
-            subprocess.run(cmd_fg, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+            proc_fg = subprocess.run(cmd_fg, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+            if proc_fg.returncode != 0:
+                self.log.emit(f"FG encode failed (exit {proc_fg.returncode}): {proc_fg.stderr[-400:] if proc_fg.stderr else ''}")
             alpha_out = base + '_alpha.mp4'
             alpha_pat = os.path.join(alpha_dir, 'frame_%06d.bmp')
             cmd_alpha = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', alpha_pat,
                          '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
                          '-movflags', '+faststart', alpha_out]
             self.status.emit("Encoding alpha matte...")
-            subprocess.run(cmd_alpha, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+            proc_alpha = subprocess.run(cmd_alpha, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+            if proc_alpha.returncode != 0:
+                self.log.emit(f"Alpha encode failed (exit {proc_alpha.returncode}): {proc_alpha.stderr[-400:] if proc_alpha.stderr else ''}")
             shutil.rmtree(fg_dir, ignore_errors=True)
             shutil.rmtree(alpha_dir, ignore_errors=True)
             if self.keep_audio and info.get('has_audio'):
@@ -3554,7 +3560,7 @@ def run_cli(args):
                 print(f"  Invalid --bg-color: {args.bg_color} (use R,G,B format)")
 
         # Use chroma-key if detected
-        if chroma_result and (args.chroma_key or True):  # Auto-use if detected
+        if chroma_result and args.chroma_key:
             worker = ChromaKeyWorker(
                 inp, out, fmt, chroma_result['color'],
                 chroma_result['similarity'], chroma_result['blend'],
