@@ -250,6 +250,27 @@ NAMING_PATTERNS = [
     "{name}_{format}",
 ]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# i18n SCAFFOLD
+# ═══════════════════════════════════════════════════════════════════════════════
+_LOCALE = {}
+
+def _load_locale():
+    """Load locale overrides from ~/.alphacut/locale.json if present."""
+    global _LOCALE
+    locale_file = os.path.join(APP_DIR, 'locale.json')
+    try:
+        with open(locale_file, 'r', encoding='utf-8') as f:
+            _LOCALE.update(json.load(f))
+    except Exception:
+        pass
+
+def _tr(key, default=None):
+    """Translate a string key. Returns the locale override or the default English text."""
+    return _LOCALE.get(key, default if default is not None else key)
+
+_load_locale()
+
 _ICON_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA3ElEQVQ4y62TsQ3CQBBE"
     "3xgkJKRuABqgAUqgFCqgBNcBFXwdUAIl0AAhEQnJcTBCPp+NhMRKq9Xu7OzO7kn/"
@@ -1972,7 +1993,7 @@ class DropZone(QLabel):
         super().__init__()
         self.setAcceptDrops(True); self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumHeight(60); self._set_style(False)
-        self.setText("Drop video file(s) here or click Browse")
+        self.setText(_tr("drop.hint", "Drop video file(s) here or click Browse"))
 
     def _set_style(self, active):
         bc = '#6c5ce7' if active else '#1e2230'
@@ -2587,30 +2608,30 @@ class AlphaCutWindow(QMainWindow):
     def _build_menu_bar(self):
         mb = self.menuBar()
         # File menu
-        file_menu = mb.addMenu("File")
-        act_browse = QAction("Open Video...", self); act_browse.triggered.connect(self._browse)
+        file_menu = mb.addMenu(_tr("menu.file", "File"))
+        act_browse = QAction(_tr("menu.open_video", "Open Video..."), self); act_browse.triggered.connect(self._browse)
         file_menu.addAction(act_browse)
-        act_batch = QAction("Open Batch...", self); act_batch.triggered.connect(self._browse_batch)
+        act_batch = QAction(_tr("menu.open_batch", "Open Batch..."), self); act_batch.triggered.connect(self._browse_batch)
         file_menu.addAction(act_batch)
         file_menu.addSeparator()
-        act_quit = QAction("Quit", self); act_quit.triggered.connect(self.close)
+        act_quit = QAction(_tr("menu.quit", "Quit"), self); act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
         # Tools menu
-        tools_menu = mb.addMenu("Tools")
-        act_models = QAction("Model Manager...", self)
+        tools_menu = mb.addMenu(_tr("menu.tools", "Tools"))
+        act_models = QAction(_tr("menu.model_manager", "Model Manager..."), self)
         act_models.triggered.connect(self._show_model_manager); tools_menu.addAction(act_models)
-        act_presets_dir = QAction("Open Settings Folder", self)
+        act_presets_dir = QAction(_tr("menu.open_settings", "Open Settings Folder"), self)
         act_presets_dir.triggered.connect(lambda: reveal_in_explorer(APP_DIR))
         tools_menu.addAction(act_presets_dir)
         # Help menu
-        help_menu = mb.addMenu("Help")
-        act_update = QAction("Check for Updates...", self)
+        help_menu = mb.addMenu(_tr("menu.help", "Help"))
+        act_update = QAction(_tr("menu.check_updates", "Check for Updates..."), self)
         act_update.triggered.connect(self._check_updates_manual); help_menu.addAction(act_update)
         help_menu.addSeparator()
-        act_github = QAction("GitHub Repository", self)
+        act_github = QAction(_tr("menu.github", "GitHub Repository"), self)
         act_github.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}")))
         help_menu.addAction(act_github)
-        act_about = QAction("About AlphaCut...", self)
+        act_about = QAction(_tr("menu.about", "About AlphaCut..."), self)
         act_about.triggered.connect(self._show_about); help_menu.addAction(act_about)
 
     def _setup_tray(self):
@@ -2634,7 +2655,7 @@ class AlphaCutWindow(QMainWindow):
         ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(4)
 
         # Input
-        grp_in = QGroupBox("INPUT"); gl = QVBoxLayout(grp_in); gl.setSpacing(4)
+        grp_in = QGroupBox(_tr("group.input", "INPUT")); gl = QVBoxLayout(grp_in); gl.setSpacing(4)
         gl.setContentsMargins(10, 16, 10, 8)
         self.drop_zone = DropZone()
         self.drop_zone.file_dropped.connect(self._load_video)
@@ -2642,11 +2663,11 @@ class AlphaCutWindow(QMainWindow):
         gl.addWidget(self.drop_zone)
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(4)
-        btn_browse = QPushButton("Browse"); btn_browse.setObjectName("secondary"); btn_browse.clicked.connect(self._browse)
+        btn_browse = QPushButton(_tr("btn.browse", "Browse")); btn_browse.setObjectName("secondary"); btn_browse.clicked.connect(self._browse)
         btn_row.addWidget(btn_browse)
-        btn_batch = QPushButton("Browse Batch"); btn_batch.setObjectName("secondary"); btn_batch.clicked.connect(self._browse_batch)
+        btn_batch = QPushButton(_tr("btn.browse_batch", "Browse Batch")); btn_batch.setObjectName("secondary"); btn_batch.clicked.connect(self._browse_batch)
         btn_row.addWidget(btn_batch)
-        self.btn_recent = QPushButton("Recent"); self.btn_recent.setObjectName("secondary")
+        self.btn_recent = QPushButton(_tr("btn.recent", "Recent")); self.btn_recent.setObjectName("secondary")
         self.btn_recent.clicked.connect(self._show_recent); btn_row.addWidget(self.btn_recent)
         gl.addLayout(btn_row)
 
@@ -2658,7 +2679,7 @@ class AlphaCutWindow(QMainWindow):
         self.info_w.setVisible(False); gl.addWidget(self.info_w); ll.addWidget(grp_in)
 
         # Settings
-        grp_set = QGroupBox("SETTINGS"); sl = QVBoxLayout(grp_set); sl.setSpacing(2)
+        grp_set = QGroupBox(_tr("group.settings", "SETTINGS")); sl = QVBoxLayout(grp_set); sl.setSpacing(2)
         sl.setContentsMargins(10, 16, 10, 8)
         lbl_smart = QLabel("What are you processing?"); lbl_smart.setObjectName("accent"); sl.addWidget(lbl_smart)
         self.combo_smart = QComboBox()
@@ -2684,7 +2705,7 @@ class AlphaCutWindow(QMainWindow):
         self.spin_gpu = QSpinBox(); self.spin_gpu.setRange(-1, 16); self.spin_gpu.setValue(-1)
         self.spin_gpu.setSpecialValueText("Auto")
         gpu_row.addWidget(self.spin_gpu); sl.addLayout(gpu_row)
-        self.chk_audio = QCheckBox("Keep original audio"); self.chk_audio.setChecked(True); sl.addWidget(self.chk_audio)
+        self.chk_audio = QCheckBox(_tr("chk.keep_audio", "Keep original audio")); self.chk_audio.setChecked(True); sl.addWidget(self.chk_audio)
 
         # Naming pattern
         name_row = QHBoxLayout(); name_row.addWidget(QLabel("Naming"))
@@ -2703,7 +2724,7 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(grp_set)
 
         # Refinement
-        grp_ref = QGroupBox("REFINEMENT"); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(2)
+        grp_ref = QGroupBox(_tr("group.refinement", "REFINEMENT")); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(2)
         rl2.setContentsMargins(10, 16, 10, 8)
         w1, self.sl_edge, _ = make_slider("Edge Softness", 0, 100, 0); rl2.addWidget(w1)
         w2, self.sl_shift, _ = make_slider("Mask Shift", -20, 20, 0); rl2.addWidget(w2)
@@ -2712,10 +2733,10 @@ class AlphaCutWindow(QMainWindow):
         ll.addWidget(grp_ref)
 
         # Compositing
-        grp_comp = QGroupBox("COMPOSITING"); cl = QVBoxLayout(grp_comp); cl.setSpacing(2)
+        grp_comp = QGroupBox(_tr("group.compositing", "COMPOSITING")); cl = QVBoxLayout(grp_comp); cl.setSpacing(2)
         cl.setContentsMargins(10, 16, 10, 8)
 
-        self.chk_invert = QCheckBox("Invert mask (remove subject)"); cl.addWidget(self.chk_invert)
+        self.chk_invert = QCheckBox(_tr("chk.invert_mask", "Invert mask (remove subject)")); cl.addWidget(self.chk_invert)
 
         w5, self.sl_spill, _ = make_slider("Spill Suppress", 0, 100, 0, "%"); cl.addWidget(w5)
         spill_row = QHBoxLayout(); spill_row.addWidget(QLabel("Spill Color"))
@@ -2736,7 +2757,7 @@ class AlphaCutWindow(QMainWindow):
         # Chroma-key detection hint + checkbox (hidden until detection runs)
         self.lbl_chroma_hint = QLabel(""); self.lbl_chroma_hint.setObjectName("subtitle")
         self.lbl_chroma_hint.setWordWrap(True); self.lbl_chroma_hint.setVisible(False); cl.addWidget(self.lbl_chroma_hint)
-        self.chk_use_chroma = QCheckBox("Use chroma-key (faster, better edges)")
+        self.chk_use_chroma = QCheckBox(_tr("chk.use_chroma", "Use chroma-key (faster, better edges)"))
         self.chk_use_chroma.setVisible(False); cl.addWidget(self.chk_use_chroma)
 
         ll.addWidget(grp_comp)
@@ -2749,28 +2770,28 @@ class AlphaCutWindow(QMainWindow):
 
         # Actions
         act_row = QHBoxLayout(); act_row.setSpacing(4)
-        self.btn_preview = QPushButton("Preview"); self.btn_preview.setObjectName("secondary")
+        self.btn_preview = QPushButton(_tr("btn.preview", "Preview")); self.btn_preview.setObjectName("secondary")
         self.btn_preview.setEnabled(False); self.btn_preview.setMinimumHeight(30)
         self.btn_preview.clicked.connect(self._preview_frame); act_row.addWidget(self.btn_preview)
-        self.btn_benchmark = QPushButton("Benchmark"); self.btn_benchmark.setObjectName("secondary")
+        self.btn_benchmark = QPushButton(_tr("btn.benchmark", "Benchmark")); self.btn_benchmark.setObjectName("secondary")
         self.btn_benchmark.setEnabled(False); self.btn_benchmark.setMinimumHeight(30)
         self.btn_benchmark.clicked.connect(self._run_benchmark); act_row.addWidget(self.btn_benchmark)
         ll.addLayout(act_row)
-        self.btn_start = QPushButton("Start Processing"); self.btn_start.setEnabled(False)
+        self.btn_start = QPushButton(_tr("btn.start", "Start Processing")); self.btn_start.setEnabled(False)
         self.btn_start.setMinimumHeight(36); self.btn_start.setStyleSheet("font-size: 13px;")
         self.btn_start.clicked.connect(self._start); ll.addWidget(self.btn_start)
-        self.btn_cancel = QPushButton("Cancel"); self.btn_cancel.setObjectName("danger")
+        self.btn_cancel = QPushButton(_tr("btn.cancel", "Cancel")); self.btn_cancel.setObjectName("danger")
         self.btn_cancel.setVisible(False); self.btn_cancel.clicked.connect(self._cancel); ll.addWidget(self.btn_cancel)
 
         # Output actions
         out_row = QHBoxLayout()
-        self.btn_copy_path = QPushButton("Copy Path")
+        self.btn_copy_path = QPushButton(_tr("btn.copy_path", "Copy Path"))
         self.btn_copy_path.setObjectName("small"); self.btn_copy_path.setVisible(False)
         self.btn_copy_path.clicked.connect(self._copy_path); out_row.addWidget(self.btn_copy_path)
-        self.btn_open_folder = QPushButton("Open Folder"); self.btn_open_folder.setObjectName("small")
+        self.btn_open_folder = QPushButton(_tr("btn.open_folder", "Open Folder")); self.btn_open_folder.setObjectName("small")
         self.btn_open_folder.setVisible(False)
         self.btn_open_folder.clicked.connect(self._open_folder); out_row.addWidget(self.btn_open_folder)
-        self.btn_drag_out = DragOutButton("Drag to NLE")
+        self.btn_drag_out = DragOutButton(_tr("btn.drag_out", "Drag to NLE"))
         self.btn_drag_out.setObjectName("small"); self.btn_drag_out.setVisible(False)
         out_row.addWidget(self.btn_drag_out)
         ll.addLayout(out_row)
@@ -2779,7 +2800,7 @@ class AlphaCutWindow(QMainWindow):
         # ── RIGHT PANEL ──
         right = QWidget(); rl = QVBoxLayout(right); rl.setContentsMargins(0,0,0,0); rl.setSpacing(10)
 
-        grp_prev = QGroupBox("PREVIEW"); pl = QVBoxLayout(grp_prev)
+        grp_prev = QGroupBox(_tr("group.preview", "PREVIEW")); pl = QVBoxLayout(grp_prev)
         self.preview = SplitPreviewWidget()
         self.preview.edits_changed.connect(self._sync_edit_summary)
         pl.addWidget(self.preview)
@@ -2810,12 +2831,12 @@ class AlphaCutWindow(QMainWindow):
         rl.addWidget(grp_prev, stretch=3)
 
         # Batch table
-        grp_batch = QGroupBox("BATCH QUEUE"); bl = QVBoxLayout(grp_batch)
+        grp_batch = QGroupBox(_tr("group.batch", "BATCH QUEUE")); bl = QVBoxLayout(grp_batch)
         self.job_table = JobTable(); bl.addWidget(self.job_table)
         self.grp_batch = grp_batch; grp_batch.setVisible(False); rl.addWidget(grp_batch)
 
-        grp_prog = QGroupBox("PROGRESS"); prl = QVBoxLayout(grp_prog); prl.setSpacing(6)
-        self.lbl_status = QLabel("Ready"); prl.addWidget(self.lbl_status)
+        grp_prog = QGroupBox(_tr("group.progress", "PROGRESS")); prl = QVBoxLayout(grp_prog); prl.setSpacing(6)
+        self.lbl_status = QLabel(_tr("status.ready", "Ready")); prl.addWidget(self.lbl_status)
         self.progress_bar = QProgressBar(); self.progress_bar.setRange(0, 100)
         self.progress_bar.setFormat("%p%"); prl.addWidget(self.progress_bar)
         prog_row = QHBoxLayout()
@@ -2824,7 +2845,7 @@ class AlphaCutWindow(QMainWindow):
         prl.addLayout(prog_row)
         rl.addWidget(grp_prog)
 
-        grp_log = QGroupBox("LOG"); lgl = QVBoxLayout(grp_log)
+        grp_log = QGroupBox(_tr("group.log", "LOG")); lgl = QVBoxLayout(grp_log)
         self.log_view = QTextEdit(); self.log_view.setReadOnly(True); self.log_view.setMaximumHeight(130)
         lgl.addWidget(self.log_view); rl.addWidget(grp_log, stretch=1)
 
