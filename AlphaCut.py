@@ -218,6 +218,7 @@ OUTPUT_FORMATS = {
     "MP4 + Green Screen (.mp4)": "greenscreen",
     "ProRes 4444 + Alpha (.mov)": "prores",
     "Matte Only — Grayscale (.mov)": "matte",
+    "FG + Alpha Pair (.mp4) — NLE Import": "fg_alpha",
     "PNG Image Sequence": "png_seq",
 }
 
@@ -308,7 +309,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif'}
+    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4'}
     ext = ext_map.get(fmt, '.mov')
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
@@ -1337,6 +1338,59 @@ class ProcessingWorker(QThread):
             self.progress.emit(100)
             return out_dir
 
+        if fmt == 'fg_alpha':
+            tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
+            if not tiff_files:
+                self.error.emit("No frames found for FG+Alpha export."); return None
+            n = len(tiff_files)
+            base = os.path.splitext(self.output_path)[0]
+            fg_dir = tempfile.mkdtemp(prefix='alphacut_fg_')
+            alpha_dir = tempfile.mkdtemp(prefix='alphacut_alpha_')
+            self.status.emit("Splitting FG + Alpha frames...")
+            for i, f in enumerate(tiff_files):
+                try:
+                    img = Image.open(f); img.load()
+                    rgba = img.convert('RGBA')
+                    r, g, b, a = rgba.split()
+                    Image.merge('RGB', (r, g, b)).save(os.path.join(fg_dir, f'frame_{i+1:06d}.bmp'), 'BMP')
+                    a.convert('RGB').save(os.path.join(alpha_dir, f'frame_{i+1:06d}.bmp'), 'BMP')
+                except Exception as e:
+                    self.log.emit(f"FG+Alpha split error frame {i}: {e}")
+                if i % 30 == 0 or i == n - 1:
+                    pct = 90 + int(((i + 1) / n) * 4)
+                    self.progress.emit(pct)
+                    self.status.emit(f"Splitting FG+Alpha {i+1}/{n}")
+            crf = int(32 - (self.quality / 100) * 18)
+            fg_out = base + '_fg.mp4'
+            fg_pat = os.path.join(fg_dir, 'frame_%06d.bmp')
+            cmd_fg = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', fg_pat,
+                      '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
+                      '-movflags', '+faststart', fg_out]
+            self.status.emit("Encoding foreground...")
+            subprocess.run(cmd_fg, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+            alpha_out = base + '_alpha.mp4'
+            alpha_pat = os.path.join(alpha_dir, 'frame_%06d.bmp')
+            cmd_alpha = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', alpha_pat,
+                         '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
+                         '-movflags', '+faststart', alpha_out]
+            self.status.emit("Encoding alpha matte...")
+            subprocess.run(cmd_alpha, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+            shutil.rmtree(fg_dir, ignore_errors=True)
+            shutil.rmtree(alpha_dir, ignore_errors=True)
+            if self.keep_audio and info.get('has_audio'):
+                fg_with_audio = base + '_fg_audio.mp4'
+                cmd_audio = [ffmpeg, '-y', '-v', 'warning', '-i', fg_out, '-i', self.input_path,
+                             '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest', fg_with_audio]
+                proc = subprocess.run(cmd_audio, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+                if proc.returncode == 0:
+                    os.replace(fg_with_audio, fg_out)
+                else:
+                    try: os.remove(fg_with_audio)
+                    except Exception: pass
+            self.progress.emit(100)
+            self.log.emit(f"FG+Alpha pair: {os.path.basename(fg_out)} + {os.path.basename(alpha_out)}")
+            return fg_out
+
         if fmt == 'webp_anim':
             tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
             if not tiff_files:
@@ -1401,7 +1455,7 @@ class ProcessingWorker(QThread):
 
         first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'fg_alpha': '.mp4'}
         out_file = os.path.splitext(self.output_path)[0] + ext_map.get(fmt, '.mov')
 
         # Quality mapping per format:
@@ -1533,7 +1587,7 @@ class BatchWorker(QThread):
                 else:
                     # Check if output exists
                     out = job['output']
-                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif'}
+                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4'}
                     if job['format'] != 'png_seq':
                         out = os.path.splitext(out)[0] + ext_map.get(job['format'], '.mov')
                     if os.path.exists(out):
@@ -1598,7 +1652,7 @@ class ChromaKeyWorker(QThread):
         # Build output path with correct extension
         _ext_map = {'mp4': '.mp4', 'webm': '.webm', 'prores': '.mov',
                     'matte': '.mov', 'png_seq': '', 'gif_anim': '.gif',
-                    'webp_anim': '.webp'}
+                    'webp_anim': '.webp', 'fg_alpha': '.mp4'}
         out = os.path.splitext(self.output_path)[0] + _ext_map.get(fmt, '.mov')
 
         self.status.emit(f"Chroma-key removal ({self.chroma_color}) → {fmt}…")
@@ -3175,7 +3229,7 @@ class AlphaCutWindow(QMainWindow):
             self._start_single(model_key, fmt, pattern)
 
     def _start_single(self, model_key, fmt, pattern):
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4'}
         if fmt == 'png_seq':
             out = QFileDialog.getExistingDirectory(self, "Select Output Folder")
             if not out: return
