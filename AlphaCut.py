@@ -3417,6 +3417,109 @@ def run_cli(args):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PIPE MODE — raw RGBA to stdout for FFmpeg/scriptable pipelines
+# ═══════════════════════════════════════════════════════════════════════════════
+def run_pipe(args):
+    """Stream raw RGBA frames to stdout for piping into FFmpeg or other tools.
+
+    Usage example:
+      python AlphaCut.py -i video.mp4 --pipe 2>nul | ^
+        ffmpeg -f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i - ^
+        -c:v libvpx-vp9 -pix_fmt yuva420p output.webm
+    """
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        print("ERROR: FFmpeg not found.", file=sys.stderr); sys.exit(1)
+    if len(args.input) != 1:
+        print("ERROR: --pipe mode supports exactly one input file.", file=sys.stderr); sys.exit(1)
+    inp = args.input[0]
+    if not os.path.isfile(inp):
+        print(f"ERROR: File not found: {inp}", file=sys.stderr); sys.exit(1)
+
+    info = get_video_info(inp)
+    if not info:
+        print("ERROR: Cannot read video.", file=sys.stderr); sys.exit(1)
+
+    w, h = info['width'], info['height']
+    fps = info['fps']
+    sw, sh = w, h
+    if args.max_res > 0 and max(w, h) > args.max_res:
+        ratio = args.max_res / max(w, h)
+        sw = int(w * ratio) // 2 * 2; sh = int(h * ratio) // 2 * 2
+
+    model_names = list(MODELS.keys())
+    model_key = model_names[0]
+    for name in model_names:
+        if args.model.lower() in name.lower():
+            model_key = name; break
+
+    bg_color = None
+    if args.bg_color:
+        try:
+            parts = [int(x.strip()) for x in args.bg_color.split(',')]
+            if len(parts) == 3:
+                bg_color = tuple(parts)
+        except ValueError:
+            pass
+    bg_image = None
+    if args.bg_image and os.path.isfile(args.bg_image):
+        try:
+            bg_image = Image.open(args.bg_image)
+            bg_image.load()
+            bg_image = bg_image.convert('RGB').resize((sw, sh), Image.Resampling.LANCZOS)
+        except Exception:
+            bg_image = None
+
+    print(f"PIPE: {sw}x{sh} @ {fps}fps | model={model_key.split('(')[0].strip()}", file=sys.stderr)
+    print(f"PIPE_HEADER: {sw} {sh} {fps}", file=sys.stderr)
+
+    engine = get_engine(model_key, log_fn=lambda m: print(m, file=sys.stderr))
+    engine.reset_temporal()
+
+    cmd = [ffmpeg, '-v', 'warning', '-i', inp, '-fps_mode', 'cfr']
+    if sw != w or sh != h:
+        cmd += ['-vf', f'scale={sw}:{sh}']
+    cmd += ['-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=_SUBPROCESS_FLAGS)
+    frame_size = sw * sh * 3
+    stdout_bin = sys.stdout.buffer
+    frame_num = 0
+
+    try:
+        while True:
+            raw = proc.stdout.read(frame_size)
+            if len(raw) < frame_size:
+                break
+            img = Image.frombytes('RGB', (sw, sh), raw)
+            mask = engine.predict_mask(img)
+            if args.edge > 0 or args.shift != 0 or args.temporal > 0:
+                mask = engine.refine_mask(mask, args.edge, args.shift, args.temporal)
+            if args.invert:
+                mask = AlphaCutEngine.invert_mask(mask)
+            if args.spill > 0:
+                img = AlphaCutEngine.suppress_spill(img, mask, args.spill, args.spill_color)
+            if args.shadow > 0:
+                mask = AlphaCutEngine.preserve_shadows(img, mask, args.shadow)
+            fg = img.convert('RGBA')
+            result = Image.composite(fg, Image.new('RGBA', fg.size, 0), mask)
+            if bg_color is not None or bg_image is not None:
+                result = AlphaCutEngine.composite_on_background(result, bg_color=bg_color, bg_image=bg_image)
+            stdout_bin.write(result.tobytes())
+            frame_num += 1
+            if frame_num % 30 == 0:
+                print(f"PIPE: frame {frame_num}", file=sys.stderr)
+    except BrokenPipeError:
+        pass
+    finally:
+        proc.terminate()
+        proc.wait()
+
+    print(f"PIPE: done — {frame_num} frames", file=sys.stderr)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
@@ -3442,11 +3545,17 @@ def main():
     parser.add_argument('--bg-image', help='Background image file path')
     parser.add_argument('--no-audio', action='store_true', help='Strip audio')
     parser.add_argument('--chroma-key', action='store_true', help='Use FFmpeg chroma-key instead of AI (for green/blue screen footage)')
+    parser.add_argument('--pipe', action='store_true',
+                        help='Pipe raw RGBA frames to stdout (for FFmpeg stdin pipelines). '
+                             'Prints frame dimensions to stderr, then streams WxHx4 bytes per frame.')
     parser.add_argument('--version', action='version', version=f'AlphaCut v{__version__}')
 
     args = parser.parse_args()
     args.audio = not args.no_audio
 
+    if args.input and args.pipe:
+        run_pipe(args)
+        return
     if args.input:
         run_cli(args)
         return
