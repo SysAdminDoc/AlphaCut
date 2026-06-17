@@ -1,10 +1,10 @@
-# AlphaCut v1.4.0
+# AlphaCut v1.5.0
 
 **Video background removal & compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video backgrounds, with built-in compositing, batch processing.
 
-![Version](https://img.shields.io/badge/Version-v1.4.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.5.0-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
