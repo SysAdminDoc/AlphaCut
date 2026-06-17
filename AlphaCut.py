@@ -678,7 +678,8 @@ class AlphaCutEngine:
         if os.path.isfile(path) and os.path.getsize(path) > 1_000_000:
             # Verify stored hash if sidecar exists; recompute and save if not.
             if os.path.isfile(sidecar):
-                stored = open(sidecar).read().strip()
+                with open(sidecar, 'r') as f:
+                    stored = f.read().strip()
                 actual = _compute_sha256(path)
                 if actual != stored:
                     self.log(f"SHA-256 mismatch for {self.config['file']} — re-downloading...")
@@ -687,7 +688,8 @@ class AlphaCutEngine:
                     self.log(f"Model verified: {self.config['file']} (sha256: {actual[:12]}…)"); return path
             else:
                 digest = _compute_sha256(path)
-                open(sidecar, 'w').write(digest)
+                with open(sidecar, 'w') as f:
+                    f.write(digest)
                 self.log(f"Model cached: {self.config['file']} (sha256: {digest[:12]}…)"); return path
 
         url = self.config['url']
@@ -709,7 +711,8 @@ class AlphaCutEngine:
                                 self.log(f"   {downloaded/(1024*1024):.1f}/{total/(1024*1024):.1f} MB ({pct}%)")
             os.replace(tmp_path, path)
             digest = _compute_sha256(path)
-            open(sidecar, 'w').write(digest)
+            with open(sidecar, 'w') as f:
+                f.write(digest)
             self.log(f"Model ready: {os.path.getsize(path)/(1024*1024):.1f} MB (sha256: {digest[:12]}…)"); return path
         except Exception as e:
             if os.path.exists(path + '.tmp'): os.remove(path + '.tmp')
@@ -755,7 +758,8 @@ def detect_chroma_background(video_path):
                '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1',
                '-loglevel', 'quiet']
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=15)
+            proc = subprocess.run(cmd, capture_output=True, timeout=15,
+                                  creationflags=_SUBPROCESS_FLAGS)
             raw = proc.stdout
             if len(raw) < 100 * 100 * 3:
                 continue
@@ -1796,7 +1800,8 @@ class ThumbnailLoader(QThread):
                        '-frames:v', '1', '-vf', 'scale=80:-1',
                        '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
                        '-loglevel', 'quiet']
-                proc = subprocess.run(cmd, capture_output=True, timeout=10)
+                proc = subprocess.run(cmd, capture_output=True, timeout=10,
+                                      creationflags=_SUBPROCESS_FLAGS)
                 if proc.returncode == 0 and proc.stdout:
                     pixmap = QPixmap()
                     pixmap.loadFromData(proc.stdout)
@@ -3572,7 +3577,7 @@ def run_cli(args):
             print()
             continue
 
-        engine = get_engine(model_key, log_fn=print)
+        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device)
         engine.reset_temporal()
         info = get_video_info(inp)
         if not info:
@@ -3586,7 +3591,8 @@ def run_cli(args):
             frame_skip=args.frame_skip, invert_mask=args.invert,
             spill_strength=args.spill, spill_color=args.spill_color,
             shadow_strength=args.shadow, bg_color=bg_color,
-            bg_image_path=args.bg_image, quality=args.quality)
+            bg_image_path=args.bg_image, quality=args.quality,
+            gpu_device=args.gpu_device)
         worker.log.connect(print)
         worker.status.connect(lambda s: print(f"  {s}"))
         worker.progress.connect(lambda p: print(f"  {p}%", end='\r') if p % 10 == 0 else None)
@@ -3653,7 +3659,8 @@ def run_pipe(args):
     print(f"PIPE: {sw}x{sh} @ {fps}fps | model={model_key.split('(')[0].strip()}", file=sys.stderr)
     print(f"PIPE_HEADER: {sw} {sh} {fps}", file=sys.stderr)
 
-    engine = get_engine(model_key, log_fn=lambda m: print(m, file=sys.stderr))
+    engine = get_engine(model_key, log_fn=lambda m: print(m, file=sys.stderr),
+                        gpu_device=args.gpu_device)
     engine.reset_temporal()
 
     cmd = [ffmpeg, '-v', 'warning', '-i', inp, '-fps_mode', 'cfr']
@@ -3724,6 +3731,8 @@ def main():
     parser.add_argument('--bg-color', help='Background color as R,G,B (e.g. 0,255,0)')
     parser.add_argument('--bg-image', help='Background image file path')
     parser.add_argument('--no-audio', action='store_true', help='Strip audio')
+    parser.add_argument('--gpu-device', type=int, default=-1,
+                        help='GPU device index for inference (-1=auto, 0=first GPU, etc.)')
     parser.add_argument('--chroma-key', action='store_true', help='Use FFmpeg chroma-key instead of AI (for green/blue screen footage)')
     parser.add_argument('--pipe', action='store_true',
                         help='Pipe raw RGBA frames to stdout (for FFmpeg stdin pipelines). '
