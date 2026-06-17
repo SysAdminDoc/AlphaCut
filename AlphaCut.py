@@ -2177,6 +2177,14 @@ class SplitPreviewWidget(QWidget):
         self._brush_size = max(1, int(size))
         self.update()
 
+    def undo_last_stroke(self):
+        if self._mask_strokes:
+            self._mask_strokes.pop()
+            self.update()
+            self.edits_changed.emit()
+            return True
+        return False
+
     def clear_mask_edits(self):
         self._roi = None
         self._mask_strokes.clear()
@@ -2996,6 +3004,10 @@ class AlphaCutWindow(QMainWindow):
         self.spin_brush = QSpinBox(); self.spin_brush.setRange(4, 256); self.spin_brush.setValue(32); self.spin_brush.setSuffix("px")
         self.spin_brush.valueChanged.connect(self._brush_size_changed)
         edit_row.addWidget(self.spin_brush)
+        btn_undo_stroke = QPushButton("Undo"); btn_undo_stroke.setObjectName("small")
+        btn_undo_stroke.setShortcut(QKeySequence.StandardKey.Undo)
+        btn_undo_stroke.clicked.connect(self._undo_stroke)
+        edit_row.addWidget(btn_undo_stroke)
         self.btn_clear_edits = QPushButton("Clear"); self.btn_clear_edits.setObjectName("small")
         self.btn_clear_edits.clicked.connect(self._clear_mask_edits)
         edit_row.addWidget(self.btn_clear_edits)
@@ -3164,7 +3176,11 @@ class AlphaCutWindow(QMainWindow):
             if data.get('body'):
                 self._log(f"Release notes:\n{data['body']}")
             self.lbl_status.setText(f"Update v{data['tag']} available")
-            QDesktopServices.openUrl(QUrl(data.get('url', f"https://github.com/{GITHUB_REPO}/releases")))
+            url = data.get('url', '')
+            if url.startswith(f"https://github.com/{GITHUB_REPO}"):
+                QDesktopServices.openUrl(QUrl(url))
+            else:
+                QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}/releases"))
         else:
             self._toast_msg(f"You're up to date (v{data['current']})")
             self.lbl_status.setText("Ready — up to date")
@@ -3441,6 +3457,11 @@ class AlphaCutWindow(QMainWindow):
     def _brush_size_changed(self, value):
         self.preview.set_brush_size(value)
 
+    def _undo_stroke(self):
+        if self.preview.undo_last_stroke():
+            self._sync_edit_summary()
+            self._toast_msg("Stroke undone")
+
     def _clear_mask_edits(self):
         self.preview.clear_mask_edits()
         self._sync_edit_summary()
@@ -3617,12 +3638,14 @@ class AlphaCutWindow(QMainWindow):
                          'roi': roi, 'mask_edits': mask_edits,
                          **comp})
         self._begin_processing()
+        self._batch_start_time = time.time()
+        self._batch_total = len(jobs)
         self._batch_worker = BatchWorker(jobs)
         self._batch_worker.job_started.connect(lambda i, n: self.job_table.update_status(i, "Processing..."))
         self._batch_worker.job_progress.connect(self.job_table.update_progress)
         self._batch_worker.job_progress.connect(lambda i, p: self.progress_bar.setValue(p))
         self._batch_worker.job_progress.connect(lambda i, p: self._update_tray_progress(p))
-        self._batch_worker.job_status.connect(lambda i, s: self.lbl_status.setText(f"[{i+1}/{len(jobs)}] {s}"))
+        self._batch_worker.job_status.connect(self._batch_status_with_eta)
         self._batch_worker.job_finished.connect(lambda i, p: (self.job_table.update_status(i, "Done"), self.job_table.update_output(i, p)))
         self._batch_worker.job_error.connect(lambda i, e: self.job_table.update_status(i, f"Error"))
         self._batch_worker.log.connect(self._log)
@@ -3650,6 +3673,16 @@ class AlphaCutWindow(QMainWindow):
         self.btn_copy_path.setVisible(True); self.btn_open_folder.setVisible(True); self.btn_drag_out.setVisible(True); self.btn_drag_out.set_file(self._last_output)
         if self._tray and self._tray.isVisible():
             self._tray.showMessage(APP_NAME, f"Done: {os.path.basename(path)}", QSystemTrayIcon.MessageIcon.Information, 5000)
+
+    def _batch_status_with_eta(self, idx, status_text):
+        elapsed = time.time() - self._batch_start_time
+        if idx > 0 and elapsed > 0:
+            avg_per_job = elapsed / idx
+            remaining = (self._batch_total - idx) * avg_per_job
+            eta = _ftime(remaining)
+            self.lbl_status.setText(f"[{idx+1}/{self._batch_total}] {status_text} | ETA {eta}")
+        else:
+            self.lbl_status.setText(f"[{idx+1}/{self._batch_total}] {status_text}")
 
     def _batch_done(self, completed, total):
         self._reset()
