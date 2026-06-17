@@ -133,7 +133,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QSpinBox, QSlider, QCheckBox, QGraphicsOpacityEffect,
     QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox,
-    QScrollArea
+    QScrollArea, QProgressDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent, QMimeData
 from PyQt6.QtGui import (
@@ -672,13 +672,17 @@ class AlphaCutEngine:
         bg_rgba = bg.convert('RGBA')
         return Image.alpha_composite(bg_rgba, fg_rgba)
 
-    def _ensure_model(self):
+    def _ensure_model(self, progress_fn=None, cancel_check=None):
+        """Download and verify the ONNX model file.
+
+        progress_fn: optional callable(downloaded_bytes, total_bytes) for real-time feedback.
+        cancel_check: optional callable() returning True to abort download.
+        """
         os.makedirs(MODELS_DIR, exist_ok=True)
         path = os.path.join(MODELS_DIR, self.config['file'])
         sidecar = path + '.sha256'
 
         if os.path.isfile(path) and os.path.getsize(path) > 1_000_000:
-            # Verify stored hash if sidecar exists; recompute and save if not.
             if os.path.isfile(sidecar):
                 with open(sidecar, 'r') as f:
                     stored = f.read().strip()
@@ -703,9 +707,16 @@ class AlphaCutEngine:
                 downloaded = 0; tmp_path = path + '.tmp'; last_pct = -10
                 with open(tmp_path, 'wb') as f:
                     while True:
+                        if cancel_check and cancel_check():
+                            f.close()
+                            try: os.remove(tmp_path)
+                            except Exception: pass
+                            raise RuntimeError("Download cancelled")
                         chunk = resp.read(256 * 1024)
                         if not chunk: break
                         f.write(chunk); downloaded += len(chunk)
+                        if progress_fn:
+                            progress_fn(downloaded, total)
                         if total > 0:
                             pct = downloaded * 100 // total
                             if pct >= last_pct + 10:
@@ -2089,6 +2100,49 @@ class BenchmarkWorker(QThread):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# MODEL DOWNLOAD WORKER — cancellable download with progress signals
+# ═══════════════════════════════════════════════════════════════════════════════
+class ModelDownloadWorker(QThread):
+    progress = pyqtSignal(int, int)   # (downloaded_bytes, total_bytes)
+    finished = pyqtSignal(str)        # model_path
+    error = pyqtSignal(str)
+
+    def __init__(self, model_key, gpu_device=-1, parent=None):
+        super().__init__(parent)
+        self.model_key = model_key
+        self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            engine = AlphaCutEngine(self.model_key, log_fn=lambda m: None,
+                                     gpu_device=self.gpu_device)
+            path = engine._ensure_model(
+                progress_fn=lambda dl, tot: self.progress.emit(dl, tot),
+                cancel_check=lambda: self._cancelled)
+            if not self._cancelled:
+                self.finished.emit(path)
+        except RuntimeError as e:
+            if not self._cancelled:
+                self.error.emit(str(e))
+        except Exception as e:
+            if not self._cancelled:
+                self.error.emit(f"{type(e).__name__}: {e}")
+
+
+def _model_needs_download(model_key):
+    """Check if a model needs downloading (not cached locally)."""
+    cfg = MODELS.get(model_key)
+    if not cfg:
+        return False
+    path = os.path.join(MODELS_DIR, cfg['file'])
+    return not (os.path.isfile(path) and os.path.getsize(path) > 1_000_000)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # WIDGETS
 # ═══════════════════════════════════════════════════════════════════════════════
 class DropZone(QLabel):
@@ -2769,7 +2823,7 @@ class AlphaCutWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1050, 800); self.resize(1200, 900)
         self.setWindowIcon(get_app_icon())
-        self._worker = None; self._batch_worker = None; self._preview_worker = None
+        self._worker = None; self._batch_worker = None; self._preview_worker = None; self._model_dl_worker = None
         self._benchmark_worker = None
         self._input_path = None; self._video_info = None; self._is_image = False
         self._last_output = None; self._batch_jobs = []
@@ -3525,6 +3579,43 @@ class AlphaCutWindow(QMainWindow):
         fmt = OUTPUT_FORMATS[list(OUTPUT_FORMATS.keys())[self.combo_fmt.currentIndex()]]
         pattern = self.combo_naming.currentText()
 
+        if _model_needs_download(model_key):
+            self._download_model_then_start(model_key, fmt, pattern)
+            return
+
+        self._dispatch_start(model_key, fmt, pattern)
+
+    def _download_model_then_start(self, model_key, fmt, pattern):
+        cfg = MODELS.get(model_key, {})
+        dlg = QProgressDialog(f"Downloading {cfg.get('file', 'model')}...", "Cancel", 0, 100, self)
+        dlg.setWindowTitle("Model Download")
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(True)
+        dlg.setAutoReset(False)
+        worker = ModelDownloadWorker(model_key, gpu_device=self.spin_gpu.value(), parent=self)
+        def _on_progress(dl, tot):
+            if tot > 0:
+                dlg.setValue(dl * 100 // tot)
+                dlg.setLabelText(f"Downloading {cfg.get('file', 'model')}... "
+                                 f"{dl/(1024*1024):.1f}/{tot/(1024*1024):.1f} MB")
+            else:
+                dlg.setLabelText(f"Downloading... {dl/(1024*1024):.1f} MB")
+        def _on_finished(path):
+            dlg.close()
+            self._log(f"Model downloaded: {os.path.basename(path)}")
+            self._dispatch_start(model_key, fmt, pattern)
+        def _on_error(msg):
+            dlg.close()
+            self._log(f"Download error: {msg}")
+            self._toast_msg("Model download failed — see log")
+        worker.progress.connect(_on_progress)
+        worker.finished.connect(_on_finished)
+        worker.error.connect(_on_error)
+        dlg.canceled.connect(worker.cancel)
+        self._model_dl_worker = worker
+        worker.start()
+
+    def _dispatch_start(self, model_key, fmt, pattern):
         if self._is_image:
             self._start_image(model_key)
             return
