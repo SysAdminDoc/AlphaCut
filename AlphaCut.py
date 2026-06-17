@@ -132,7 +132,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QComboBox, QFileDialog, QGroupBox, QGridLayout,
     QTextEdit, QSpinBox, QSlider, QCheckBox, QGraphicsOpacityEffect,
     QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox
+    QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent, QMimeData
 from PyQt6.QtGui import (
@@ -2382,6 +2383,65 @@ class DragOutButton(QPushButton):
         super().mouseReleaseEvent(e)
 
 
+class ThumbnailGrid(QScrollArea):
+    """Visual grid of batch file thumbnails for quick preview scanning."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setMaximumHeight(140)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setStyleSheet("QScrollArea { background: #0a0c10; border: 1px solid #1a1d28; border-radius: 8px; }")
+        self._container = QWidget()
+        self._layout = QGridLayout(self._container)
+        self._layout.setContentsMargins(6, 6, 6, 6)
+        self._layout.setSpacing(6)
+        self.setWidget(self._container)
+        self._cells = []
+        self._cols = 6
+
+    def set_files(self, filenames):
+        for w in self._cells:
+            self._layout.removeWidget(w)
+            w.deleteLater()
+        self._cells.clear()
+        for i, name in enumerate(filenames):
+            cell = QWidget()
+            cell_lay = QVBoxLayout(cell)
+            cell_lay.setContentsMargins(2, 2, 2, 2)
+            cell_lay.setSpacing(2)
+            thumb = QLabel()
+            thumb.setFixedSize(80, 60)
+            thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            thumb.setStyleSheet("background: #13161d; border-radius: 4px;")
+            thumb.setObjectName(f"thumb_{i}")
+            cell_lay.addWidget(thumb)
+            lbl = QLabel(os.path.basename(name))
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #6e7a94; font-size: 9px;")
+            lbl.setMaximumWidth(86)
+            lbl.setWordWrap(False)
+            cell_lay.addWidget(lbl)
+            row, col = divmod(i, self._cols)
+            self._layout.addWidget(cell, row, col)
+            self._cells.append(cell)
+
+    def set_thumbnail(self, index, pixmap):
+        if index < len(self._cells):
+            cell = self._cells[index]
+            thumb = cell.findChild(QLabel, f"thumb_{index}")
+            if thumb:
+                scaled = pixmap.scaled(76, 56, Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation)
+                thumb.setPixmap(scaled)
+
+    def clear_all(self):
+        for w in self._cells:
+            self._layout.removeWidget(w)
+            w.deleteLater()
+        self._cells.clear()
+
+
 class NoScrollFilter(QObject):
     """Eats scroll-wheel events on combo boxes, sliders, and spin boxes
     so the left panel scrolls instead of accidentally changing values."""
@@ -2832,6 +2892,7 @@ class AlphaCutWindow(QMainWindow):
 
         # Batch table
         grp_batch = QGroupBox(_tr("group.batch", "BATCH QUEUE")); bl = QVBoxLayout(grp_batch)
+        self.thumb_grid = ThumbnailGrid(); bl.addWidget(self.thumb_grid)
         self.job_table = JobTable(); bl.addWidget(self.job_table)
         self.grp_batch = grp_batch; grp_batch.setVisible(False); rl.addWidget(grp_batch)
 
@@ -3140,7 +3201,7 @@ class AlphaCutWindow(QMainWindow):
     def _load_video(self, path):
         if not os.path.isfile(path): return
         self._input_path = path; self._batch_jobs = []
-        self.grp_batch.setVisible(False); self.job_table.clear_all()
+        self.grp_batch.setVisible(False); self.job_table.clear_all(); self.thumb_grid.clear_all()
         self.preview.clear_mask_edits()
         add_recent_file(path)
         self._log(f"\nLoaded: {os.path.basename(path)}")
@@ -3187,6 +3248,7 @@ class AlphaCutWindow(QMainWindow):
         s['recent_files'] = recent[:20]
         save_settings(s)
         self.grp_batch.setVisible(True); self.job_table.clear_all()
+        self.thumb_grid.set_files(self._batch_jobs)
         for i, p in enumerate(self._batch_jobs):
             self.job_table.add_job(os.path.basename(p))
         self.drop_zone.setText(f"{len(self._batch_jobs)} videos queued")
@@ -3202,7 +3264,7 @@ class AlphaCutWindow(QMainWindow):
         jobs = [(i, p) for i, p in enumerate(self._batch_jobs)]
         self._thumbnail_loader = ThumbnailLoader(jobs)
         self._thumbnail_loader.thumbnail_ready.connect(
-            lambda row, pixmap: self.job_table.set_thumbnail(row, pixmap))
+            lambda row, pixmap: (self.job_table.set_thumbnail(row, pixmap), self.thumb_grid.set_thumbnail(row, pixmap)))
         self._thumbnail_loader.start()
 
     def _update_estimate(self):
