@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def _build_parser():
     """Build the same argument parser as main() without triggering bootstrap."""
-    output_formats = ['mp4', 'av1', 'webm', 'webp_anim', 'gif_anim',
+    output_formats = ['mp4', 'hevc', 'av1', 'webm', 'webp_anim', 'gif_anim',
                       'greenscreen', 'prores', 'matte', 'fg_alpha', 'png_seq']
     parser = argparse.ArgumentParser(prog='AlphaCut')
     parser.add_argument('--input', '-i', nargs='+')
@@ -33,6 +33,7 @@ def _build_parser():
     parser.add_argument('--fp16', action='store_true')
     parser.add_argument('--chroma-key', action='store_true')
     parser.add_argument('--pipe', action='store_true')
+    parser.add_argument('--json', action='store_true')
     return parser
 
 
@@ -63,7 +64,7 @@ def test_multiple_inputs():
 
 def test_all_format_choices():
     parser = _build_parser()
-    valid = ['mp4', 'av1', 'webm', 'webp_anim', 'gif_anim',
+    valid = ['mp4', 'hevc', 'av1', 'webm', 'webp_anim', 'gif_anim',
              'greenscreen', 'prores', 'matte', 'fg_alpha', 'png_seq']
     for fmt in valid:
         args = parser.parse_args(['-f', fmt])
@@ -116,6 +117,14 @@ def test_bg_color_passed_as_string():
     parser = _build_parser()
     args = parser.parse_args(['--bg-color', '255,0,128'])
     assert args.bg_color == '255,0,128'
+
+
+def test_json_flag():
+    parser = _build_parser()
+    args = parser.parse_args(['--json', '-i', 'test.mp4'])
+    assert args.json is True
+    args2 = parser.parse_args(['-i', 'test.mp4'])
+    assert args2.json is False
 
 
 def test_quality_range():

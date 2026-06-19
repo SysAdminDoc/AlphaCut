@@ -121,6 +121,30 @@
       "sigmoid": true,
       "license": "MIT",
       "description": "Trimap-free alpha matting — best for hair and transparent edges"
+    },
+    {
+      "name": "BiRefNet-DIS",
+      "label": "BiRefNet-DIS (Dichotomous Segmentation)",
+      "file": "birefnet-dis.onnx",
+      "url": "{base_url}/BiRefNet-DIS-epoch_590.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": true,
+      "license": "MIT",
+      "description": "Dichotomous image segmentation — excels at complex edges and fine detail"
+    },
+    {
+      "name": "BiRefNet-massive",
+      "label": "BiRefNet-massive (Highest Quality — Large)",
+      "file": "birefnet-massive.onnx",
+      "url": "{base_url}/BiRefNet-massive-epoch_420.onnx",
+      "input_size": [1024, 1024],
+      "mean": [0.485, 0.456, 0.406],
+      "std": [0.229, 0.224, 0.225],
+      "sigmoid": true,
+      "license": "MIT",
+      "description": "Largest BiRefNet variant — highest quality, slowest inference (~1GB model)"
     }
   ]
 }

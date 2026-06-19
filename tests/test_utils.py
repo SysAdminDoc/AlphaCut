@@ -97,7 +97,7 @@ def test_compute_sha256():
 
 def test_output_format_keys_unique():
     """OUTPUT_FORMATS values should all be unique."""
-    formats = ['mp4', 'av1', 'webm', 'webp_anim', 'gif_anim', 'greenscreen',
+    formats = ['mp4', 'hevc', 'av1', 'webm', 'webp_anim', 'gif_anim', 'greenscreen',
                'prores', 'matte', 'fg_alpha', 'png_seq']
     assert len(formats) == len(set(formats))
 
@@ -126,7 +126,7 @@ def test_estimate_output_size():
     def estimate(info, fmt):
         if not info: return 0
         px = info['width'] * info['height']; frames = info['total_frames']
-        bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'mp4': px*0.08, 'av1': px*0.06}
+        bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'mp4': px*0.08, 'hevc': px*0.06, 'av1': px*0.06}
         return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
     info = {'width': 1920, 'height': 1080, 'total_frames': 300}

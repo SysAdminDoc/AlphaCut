@@ -61,6 +61,12 @@ def _pip_install(package, verbose=False):
     return False
 
 
+def _is_cli_mode():
+    """Detect CLI/pipe mode from sys.argv before full arg parsing."""
+    return any(a in sys.argv for a in ['-i', '--input', '--pipe', '--version'])
+
+_CLI_MODE = _is_cli_mode()
+
 def _bootstrap():
     if sys.version_info < (3, 9):
         print("Python 3.9+ required"); sys.exit(1)
@@ -68,8 +74,10 @@ def _bootstrap():
         import pip
     except ImportError:
         subprocess.check_call([sys.executable, '-m', 'ensurepip', '--default-pip'])
-    deps = [('PyQt6', 'PyQt6'), ('PIL', 'Pillow'), ('numpy', 'numpy'),
+    deps = [('PIL', 'Pillow'), ('numpy', 'numpy'),
             ('scipy', 'scipy'), ('onnxruntime', 'onnxruntime')]
+    if not _CLI_MODE:
+        deps.insert(0, ('PyQt6', 'PyQt6'))
     import importlib
     try:
         __import__('onnxruntime')
@@ -127,20 +135,55 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy.ndimage import gaussian_filter, binary_erosion, binary_dilation
 import onnxruntime as ort
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QProgressBar, QComboBox, QFileDialog, QGroupBox, QGridLayout,
-    QTextEdit, QSpinBox, QSlider, QCheckBox, QGraphicsOpacityEffect,
-    QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox,
-    QScrollArea, QProgressDialog
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent, QMimeData
-from PyQt6.QtGui import (
-    QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent, QPalette,
-    QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices, QDrag,
-    QKeySequence
-)
+_HAS_QT = False
+try:
+    from PyQt6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+        QPushButton, QProgressBar, QComboBox, QFileDialog, QGroupBox, QGridLayout,
+        QTextEdit, QSpinBox, QSlider, QCheckBox, QGraphicsOpacityEffect,
+        QSystemTrayIcon, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
+        QAbstractItemView, QLineEdit, QColorDialog, QDialog, QDialogButtonBox,
+        QScrollArea, QProgressDialog
+    )
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve, QUrl, QObject, QEvent, QMimeData
+    from PyQt6.QtGui import (
+        QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent, QPalette,
+        QIcon, QAction, QMouseEvent, QPen, QClipboard, QDesktopServices, QDrag,
+        QKeySequence
+    )
+    _HAS_QT = True
+except ImportError:
+    if not _CLI_MODE:
+        raise
+    # CLI/pipe mode without PyQt6: provide minimal stubs for worker classes
+    import signal as _signal_mod
+    class _QtStub:
+        """Minimal stub so worker class definitions don't fail at parse time."""
+        class _Signal:
+            def __init__(self, *args): pass
+            def connect(self, fn): self._fn = fn
+            def emit(self, *args):
+                if hasattr(self, '_fn'): self._fn(*args)
+        def __getattr__(self, name): return type(self)()
+        def __call__(self, *a, **kw): return self
+    class QThread:
+        """Stub QThread for CLI mode — runs synchronously."""
+        def __init__(self, parent=None): pass
+        def start(self): self.run()
+        def isRunning(self): return False
+        def quit(self): pass
+        def wait(self, ms=0): pass
+    class QObject:
+        def __init__(self, parent=None): pass
+    pyqtSignal = _QtStub._Signal
+    QTimer = _QtStub()
+    QEvent = _QtStub()
+    QMimeData = _QtStub()
+    QPropertyAnimation = _QtStub()
+    QEasingCurve = _QtStub()
+    QUrl = _QtStub()
+    Qt = _QtStub()
+    # Widget stubs not needed — GUI classes won't be instantiated in CLI mode
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -214,6 +257,7 @@ MODELS = _load_model_registry()
 
 OUTPUT_FORMATS = {
     "MP4 H.264 (.mp4) — Smallest": "mp4",
+    "MP4 H.265/HEVC (.mp4) — Better Quality": "hevc",
     "MP4 AV1 (.mp4) — Best Compression": "av1",
     "WebM VP9 + Alpha (.webm)": "webm",
     "Animated WebP (.webp) — Short Clips": "webp_anim",
@@ -333,7 +377,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
+    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'hevc': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
     ext = ext_map.get(fmt, '.mov')
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
@@ -499,6 +543,8 @@ class AlphaCutEngine:
                 providers.append(('DmlExecutionProvider', {'device_id': str(gpu_device)}))
             else:
                 providers.append('DmlExecutionProvider')
+        if 'CoreMLExecutionProvider' in available and sys.platform == 'darwin':
+            providers.append('CoreMLExecutionProvider')
         providers.append('CPUExecutionProvider'); return providers
 
     @staticmethod
@@ -560,7 +606,16 @@ class AlphaCutEngine:
         for c in range(3): a[:,:,c] = (a[:,:,c] - mean[c]) / std[c]
         dtype = np.float16 if self._use_fp16 else np.float32
         tensor = np.expand_dims(a.transpose((2,0,1)), 0).astype(dtype)
-        ort_outs = self.session.run(None, {self.session.get_inputs()[0].name: tensor})
+        try:
+            ort_outs = self.session.run(None, {self.session.get_inputs()[0].name: tensor})
+        except Exception as e:
+            if self._use_fp16:
+                self.log(f"FP16 inference failed ({e}), falling back to FP32")
+                tensor = tensor.astype(np.float32)
+                ort_outs = self.session.run(None, {self.session.get_inputs()[0].name: tensor})
+                self._use_fp16 = False
+            else:
+                raise
         pred = ort_outs[0][:, 0, :, :]
         if cfg['sigmoid']: pred = 1.0 / (1.0 + np.exp(-pred))
         ma, mi = np.max(pred), np.min(pred)
@@ -683,7 +738,10 @@ class AlphaCutEngine:
         cancel_check: optional callable() returning True to abort download.
         """
         os.makedirs(MODELS_DIR, exist_ok=True)
-        path = os.path.join(MODELS_DIR, self.config['file'])
+        filename = os.path.basename(self.config['file'])
+        if not filename or '..' in self.config['file'] or os.sep in self.config['file'].replace(filename, ''):
+            raise ValueError(f"Invalid model filename: {self.config['file']}")
+        path = os.path.join(MODELS_DIR, filename)
         sidecar = path + '.sha256'
 
         if os.path.isfile(path) and os.path.getsize(path) > 1_000_000:
@@ -879,10 +937,12 @@ def get_video_info(filepath):
 def estimate_output_size(info, fmt):
     if not info: return 0
     px = info['width'] * info['height']; frames = info['total_frames']
-    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'av1': px*0.06, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
+    bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'hevc': px*0.06, 'av1': px*0.06, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
 def pil_to_qimage(pil_img):
+    if not _HAS_QT:
+        raise RuntimeError("pil_to_qimage requires PyQt6")
     img = pil_img.convert('RGBA'); data = img.tobytes('raw', 'RGBA')
     return QImage(data, img.width, img.height, img.width * 4, QImage.Format.Format_RGBA8888).copy()
 
@@ -1392,54 +1452,58 @@ class ProcessingWorker(QThread):
             base = os.path.splitext(self.output_path)[0]
             fg_dir = tempfile.mkdtemp(prefix='alphacut_fg_')
             alpha_dir = tempfile.mkdtemp(prefix='alphacut_alpha_')
-            self.status.emit("Splitting FG + Alpha frames...")
-            for i, f in enumerate(tiff_files):
-                try:
-                    img = Image.open(f); img.load()
-                    rgba = img.convert('RGBA')
-                    r, g, b, a = rgba.split()
-                    Image.merge('RGB', (r, g, b)).save(os.path.join(fg_dir, f'frame_{i+1:06d}.bmp'), 'BMP')
-                    a.convert('RGB').save(os.path.join(alpha_dir, f'frame_{i+1:06d}.bmp'), 'BMP')
-                except Exception as e:
-                    self.log.emit(f"FG+Alpha split error frame {i}: {e}")
-                if i % 30 == 0 or i == n - 1:
-                    pct = 90 + int(((i + 1) / n) * 4)
-                    self.progress.emit(pct)
-                    self.status.emit(f"Splitting FG+Alpha {i+1}/{n}")
-            crf = int(32 - (self.quality / 100) * 18)
-            fg_out = base + '_fg.mp4'
-            fg_pat = os.path.join(fg_dir, 'frame_%06d.bmp')
-            cmd_fg = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', fg_pat,
-                      '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
-                      '-movflags', '+faststart', fg_out]
-            self.status.emit("Encoding foreground...")
-            proc_fg = subprocess.run(cmd_fg, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
-            if proc_fg.returncode != 0:
-                self.log.emit(f"FG encode failed (exit {proc_fg.returncode}): {proc_fg.stderr[-400:] if proc_fg.stderr else ''}")
-            alpha_out = base + '_alpha.mp4'
-            alpha_pat = os.path.join(alpha_dir, 'frame_%06d.bmp')
-            cmd_alpha = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', alpha_pat,
-                         '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
-                         '-movflags', '+faststart', alpha_out]
-            self.status.emit("Encoding alpha matte...")
-            proc_alpha = subprocess.run(cmd_alpha, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
-            if proc_alpha.returncode != 0:
-                self.log.emit(f"Alpha encode failed (exit {proc_alpha.returncode}): {proc_alpha.stderr[-400:] if proc_alpha.stderr else ''}")
-            shutil.rmtree(fg_dir, ignore_errors=True)
-            shutil.rmtree(alpha_dir, ignore_errors=True)
-            if self.keep_audio and info.get('has_audio'):
-                fg_with_audio = base + '_fg_audio.mp4'
-                cmd_audio = [ffmpeg, '-y', '-v', 'warning', '-i', fg_out, '-i', self.input_path,
-                             '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest', fg_with_audio]
-                proc = subprocess.run(cmd_audio, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
-                if proc.returncode == 0:
-                    os.replace(fg_with_audio, fg_out)
-                else:
-                    try: os.remove(fg_with_audio)
-                    except Exception: pass
-            self.progress.emit(100)
-            self.log.emit(f"FG+Alpha pair: {os.path.basename(fg_out)} + {os.path.basename(alpha_out)}")
-            return fg_out
+            try:
+                self.status.emit("Splitting FG + Alpha frames...")
+                for i, f in enumerate(tiff_files):
+                    try:
+                        img = Image.open(f); img.load()
+                        rgba = img.convert('RGBA')
+                        r, g, b, a = rgba.split()
+                        Image.merge('RGB', (r, g, b)).save(os.path.join(fg_dir, f'frame_{i+1:06d}.bmp'), 'BMP')
+                        a.convert('RGB').save(os.path.join(alpha_dir, f'frame_{i+1:06d}.bmp'), 'BMP')
+                    except Exception as e:
+                        self.log.emit(f"FG+Alpha split error frame {i}: {e}")
+                    if i % 30 == 0 or i == n - 1:
+                        pct = 90 + int(((i + 1) / n) * 4)
+                        self.progress.emit(pct)
+                        self.status.emit(f"Splitting FG+Alpha {i+1}/{n}")
+                crf = int(32 - (self.quality / 100) * 18)
+                fg_out = base + '_fg.mp4'
+                fg_pat = os.path.join(fg_dir, 'frame_%06d.bmp')
+                cmd_fg = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', fg_pat,
+                          '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
+                          '-movflags', '+faststart', fg_out]
+                self.status.emit("Encoding foreground...")
+                proc_fg = subprocess.run(cmd_fg, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+                if proc_fg.returncode != 0:
+                    self.log.emit(f"FG encode failed (exit {proc_fg.returncode}): {proc_fg.stderr[-400:] if proc_fg.stderr else ''}")
+                    self.error.emit("FG+Alpha encode failed: foreground encoding error."); return None
+                alpha_out = base + '_alpha.mp4'
+                alpha_pat = os.path.join(alpha_dir, 'frame_%06d.bmp')
+                cmd_alpha = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', alpha_pat,
+                             '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
+                             '-movflags', '+faststart', alpha_out]
+                self.status.emit("Encoding alpha matte...")
+                proc_alpha = subprocess.run(cmd_alpha, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+                if proc_alpha.returncode != 0:
+                    self.log.emit(f"Alpha encode failed (exit {proc_alpha.returncode}): {proc_alpha.stderr[-400:] if proc_alpha.stderr else ''}")
+                    self.error.emit("FG+Alpha encode failed: alpha matte encoding error."); return None
+                if self.keep_audio and info.get('has_audio'):
+                    fg_with_audio = base + '_fg_audio.mp4'
+                    cmd_audio = [ffmpeg, '-y', '-v', 'warning', '-i', fg_out, '-i', self.input_path,
+                                 '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest', fg_with_audio]
+                    proc = subprocess.run(cmd_audio, capture_output=True, creationflags=_SUBPROCESS_FLAGS)
+                    if proc.returncode == 0:
+                        os.replace(fg_with_audio, fg_out)
+                    else:
+                        try: os.remove(fg_with_audio)
+                        except Exception: pass
+                self.progress.emit(100)
+                self.log.emit(f"FG+Alpha pair: {os.path.basename(fg_out)} + {os.path.basename(alpha_out)}")
+                return fg_out
+            finally:
+                shutil.rmtree(fg_dir, ignore_errors=True)
+                shutil.rmtree(alpha_dir, ignore_errors=True)
 
         if fmt == 'webp_anim':
             tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
@@ -1505,7 +1569,7 @@ class ProcessingWorker(QThread):
 
         first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'fg_alpha': '.mp4', 'av1': '.mp4'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'hevc': '.mp4', 'fg_alpha': '.mp4', 'av1': '.mp4'}
         out_file = os.path.splitext(self.output_path)[0] + ext_map.get(fmt, '.mov')
 
         # Quality mapping per format:
@@ -1537,6 +1601,13 @@ class ProcessingWorker(QThread):
                    f"color=c=#00ff00:s={fw}x{fh}:r={fps}[bg];[bg][0:v]overlay=shortest=1",
                    '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p']
             self.log.emit(f"Greenscreen quality: CRF={crf}")
+        elif fmt == 'hevc':
+            # CRF: q=0→34, q=50→24, q=100→16 (H.265, no alpha)
+            crf = int(34 - (q / 100) * 18)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'libx265', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart', '-tag:v', 'hvc1']
+            self.log.emit(f"HEVC quality: CRF={crf}")
         elif fmt == 'av1':
             crf = int(40 - (q / 100) * 22)
             cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
@@ -1550,7 +1621,7 @@ class ProcessingWorker(QThread):
 
         if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte', 'webp_anim', 'gif_anim'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
-                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4', 'av1') else 'copy'), '-shortest']
+                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4', 'hevc', 'av1') else 'copy'), '-shortest']
         # Add -progress pipe:1 for real-time encode progress
         cmd += ['-progress', 'pipe:1', out_file]
         self.log.emit(f"Encoding: {fmt}...")
@@ -2146,7 +2217,7 @@ def _model_needs_download(model_key):
     cfg = MODELS.get(model_key)
     if not cfg:
         return False
-    path = os.path.join(MODELS_DIR, cfg['file'])
+    path = os.path.join(MODELS_DIR, os.path.basename(cfg['file']))
     return not (os.path.isfile(path) and os.path.getsize(path) > 1_000_000)
 
 
@@ -2749,14 +2820,14 @@ class ModelManagerDialog(QDialog):
             self.table.setItem(i, 0, QTableWidgetItem(short))
             self.table.setItem(i, 1, QTableWidgetItem(f"{cfg['size'][0]}px"))
 
-            model_path = os.path.join(MODELS_DIR, cfg['file'])
+            model_path = os.path.join(MODELS_DIR, os.path.basename(cfg['file']))
             if os.path.isfile(model_path):
                 size_mb = os.path.getsize(model_path) / (1024 * 1024)
                 self.table.setItem(i, 2, QTableWidgetItem("Downloaded"))
                 self.table.setItem(i, 3, QTableWidgetItem(f"{size_mb:.1f} MB"))
                 btn = QPushButton("Delete"); btn.setObjectName("danger")
                 btn.setFixedWidth(70)
-                btn.clicked.connect(lambda _, r=i, f=cfg['file']: self._delete_model(r, f))
+                btn.clicked.connect(lambda _, r=i, f=os.path.basename(cfg['file']): self._delete_model(r, f))
                 self.table.setCellWidget(i, 4, btn)
             else:
                 self.table.setItem(i, 2, QTableWidgetItem("Not downloaded"))
@@ -2783,6 +2854,7 @@ class ModelManagerDialog(QDialog):
         btn_row.addWidget(btn_close); lay.addLayout(btn_row)
 
     def _delete_model(self, row, filename):
+        filename = os.path.basename(filename)
         path = os.path.join(MODELS_DIR, filename)
         try:
             if os.path.isfile(path): os.remove(path)
@@ -3771,7 +3843,7 @@ class AlphaCutWindow(QMainWindow):
         if self._tray: self._tray.show(); self._tray.setToolTip(f"{APP_NAME} — Processing...")
 
     def _cancel(self):
-        for w in [self._worker, self._batch_worker, self._chroma_detect_worker, self._thumbnail_loader]:
+        for w in [self._worker, self._batch_worker, self._chroma_detect_worker, self._thumbnail_loader, self._model_dl_worker]:
             if w and w.isRunning(): w.cancel(); w.quit(); w.wait(5000)
         self._reset(); self.lbl_status.setText("Cancelled"); self._toast_msg("Cancelled")
 
@@ -3824,7 +3896,7 @@ class AlphaCutWindow(QMainWindow):
         self._save_settings(); self._stop_glow()
         if self._tray: self._tray.hide()
         # Cancel all workers first, then wait (parallel cancel, sequential wait)
-        workers = [self._worker, self._batch_worker, self._preview_worker, self._benchmark_worker]
+        workers = [self._worker, self._batch_worker, self._preview_worker, self._benchmark_worker, self._model_dl_worker]
         for w in workers:
             if w and w.isRunning() and hasattr(w, 'cancel'): w.cancel()
         for w in workers:
@@ -3876,10 +3948,29 @@ def _cli_process_image(inp, out, model_key, args, bg_color):
         print(f"  ERROR: {e}")
 
 
+def _json_line(obj):
+    """Print a single JSON object as one line to stdout."""
+    print(json.dumps(obj, ensure_ascii=False), flush=True)
+
 def run_cli(args):
     """Headless CLI processing."""
-    from PyQt6.QtCore import QCoreApplication
-    cli_app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+    if _HAS_QT:
+        from PyQt6.QtCore import QCoreApplication
+        cli_app = QCoreApplication.instance() or QCoreApplication(sys.argv)
+
+    use_json = getattr(args, 'json', False)
+
+    def _out(msg):
+        if use_json: _json_line({"type": "log", "message": msg})
+        else: print(msg)
+
+    def _status(s):
+        if use_json: _json_line({"type": "status", "message": s})
+        else: print(f"  {s}")
+
+    def _progress(p):
+        if use_json: _json_line({"type": "progress", "percent": p})
+        elif p % 10 == 0: print(f"  {p}%", end='\r')
 
     model_names = list(MODELS.keys())
     model_key = model_names[0]
@@ -3888,7 +3979,9 @@ def run_cli(args):
             model_key = name; break
     fmt = args.format
     if fmt not in OUTPUT_FORMATS.values():
-        print(f"Unknown format: {fmt}. Options: {', '.join(OUTPUT_FORMATS.values())}"); sys.exit(1)
+        if use_json: _json_line({"type": "error", "message": f"Unknown format: {fmt}"})
+        else: print(f"Unknown format: {fmt}. Options: {', '.join(OUTPUT_FORMATS.values())}")
+        sys.exit(1)
 
     # Parse bg_color once
     bg_color = None
@@ -3897,29 +3990,36 @@ def run_cli(args):
             parts = [int(x.strip()) for x in args.bg_color.split(',')]
             if len(parts) == 3: bg_color = tuple(parts)
         except ValueError:
-            print(f"Invalid --bg-color: {args.bg_color} (use R,G,B format)")
+            _out(f"Invalid --bg-color: {args.bg_color} (use R,G,B format)")
 
     for inp in args.input:
         if not os.path.isfile(inp):
-            print(f"File not found: {inp}"); continue
+            if use_json: _json_line({"type": "error", "message": f"File not found: {inp}"})
+            else: print(f"File not found: {inp}")
+            continue
 
         # Detect image input
         ext = os.path.splitext(inp)[1].lower()
         if ext in IMAGE_EXTENSIONS:
             out = args.output if args.output else os.path.splitext(inp)[0] + '_alphacut.png'
             if os.path.exists(out) and not args.overwrite:
-                print(f"Output exists: {out} (use -y to overwrite)"); continue
+                _out(f"Output exists: {out} (use -y to overwrite)"); continue
+            if use_json: _json_line({"type": "start", "input": inp, "output": out, "model": model_key})
             _cli_process_image(inp, out, model_key, args, bg_color)
+            if use_json and os.path.isfile(out):
+                _json_line({"type": "done", "input": inp, "output": out, "size_mb": round(os.path.getsize(out)/(1024*1024), 1)})
             continue
 
         if not find_ffmpeg():
-            print("ERROR: FFmpeg not found — required for video processing."); sys.exit(1)
+            if use_json: _json_line({"type": "error", "message": "FFmpeg not found"})
+            else: print("ERROR: FFmpeg not found — required for video processing.")
+            sys.exit(1)
         if args.output:
             out = args.output
         else:
             out = generate_output_name(inp, "{name}_alphacut", model_key, fmt)
         if os.path.exists(out) and not args.overwrite:
-            print(f"Output exists: {out} (use -y to overwrite)"); continue
+            _out(f"Output exists: {out} (use -y to overwrite)"); continue
         info = get_video_info(inp)
         if info:
             est_mb = estimate_output_size(info, fmt)
@@ -3927,22 +4027,25 @@ def run_cli(args):
                 drive = os.path.splitdrive(out)[0] or '/'
                 free_mb = shutil.disk_usage(drive).free / (1024 * 1024)
                 if free_mb < est_mb * 2.5:
-                    print(f"  WARNING: Low disk space! Need ~{est_mb*2.5:.0f} MB, have {free_mb:.0f} MB")
+                    _out(f"WARNING: Low disk space! Need ~{est_mb*2.5:.0f} MB, have {free_mb:.0f} MB")
             except Exception:
                 pass
-        print(f"\nProcessing: {inp}")
-        print(f"  Model: {model_key}")
-        print(f"  Format: {fmt}")
-        print(f"  Output: {out}")
+        if use_json:
+            _json_line({"type": "start", "input": inp, "output": out, "model": model_key, "format": fmt})
+        else:
+            print(f"\nProcessing: {inp}")
+            print(f"  Model: {model_key}")
+            print(f"  Format: {fmt}")
+            print(f"  Output: {out}")
 
         # Auto-detect or use --chroma-key flag
         chroma_result = None
         if args.chroma_key:
             chroma_result = detect_chroma_background(inp)
             if chroma_result:
-                print(f"  Chroma-key detected: {chroma_result['color']}-screen")
+                _out(f"Chroma-key detected: {chroma_result['color']}-screen")
             else:
-                print(f"  --chroma-key set but no solid background detected; using AI")
+                _out(f"--chroma-key set but no solid background detected; using AI")
 
         # Use chroma-key if detected
         if chroma_result and args.chroma_key:
@@ -3950,18 +4053,22 @@ def run_cli(args):
                 inp, out, fmt, chroma_result['color'],
                 chroma_result['similarity'], chroma_result['blend'],
                 quality=args.quality, keep_audio=args.audio)
-            worker.log.connect(print)
-            worker.status.connect(lambda s: print(f"  {s}"))
-            worker.progress.connect(lambda p: print(f"  {p}%", end='\r') if p % 10 == 0 else None)
+            worker.log.connect(_out)
+            worker.status.connect(_status)
+            worker.progress.connect(_progress)
             worker.run()
-            print()
+            if not use_json: print()
+            if use_json and os.path.isfile(out):
+                _json_line({"type": "done", "input": inp, "output": out, "size_mb": round(os.path.getsize(out)/(1024*1024), 1)})
             continue
 
-        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device, fp16=args.fp16)
+        engine = get_engine(model_key, log_fn=_out, gpu_device=args.gpu_device, fp16=args.fp16)
         engine.reset_temporal()
         info = get_video_info(inp)
         if not info:
-            print(f"  ERROR: Cannot read video"); continue
+            if use_json: _json_line({"type": "error", "message": f"Cannot read video: {inp}"})
+            else: print(f"  ERROR: Cannot read video")
+            continue
 
         # Use processing worker synchronously
         worker = ProcessingWorker(
@@ -3973,13 +4080,16 @@ def run_cli(args):
             shadow_strength=args.shadow, bg_color=bg_color,
             bg_image_path=args.bg_image, quality=args.quality,
             gpu_device=args.gpu_device, fp16=args.fp16)
-        worker.log.connect(print)
-        worker.status.connect(lambda s: print(f"  {s}"))
-        worker.progress.connect(lambda p: print(f"  {p}%", end='\r') if p % 10 == 0 else None)
+        worker.log.connect(_out)
+        worker.status.connect(_status)
+        worker.progress.connect(_progress)
         worker.run()
-        print()
+        if not use_json: print()
+        if use_json and os.path.isfile(out):
+            _json_line({"type": "done", "input": inp, "output": out, "size_mb": round(os.path.getsize(out)/(1024*1024), 1)})
 
-    print("Done.")
+    if use_json: _json_line({"type": "complete"})
+    else: print("Done.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4119,6 +4229,8 @@ def main():
     parser.add_argument('--pipe', action='store_true',
                         help='Pipe raw RGBA frames to stdout (for FFmpeg stdin pipelines). '
                              'Prints frame dimensions to stderr, then streams WxHx4 bytes per frame.')
+    parser.add_argument('--json', action='store_true',
+                        help='Output machine-readable JSON lines (one JSON object per event)')
     parser.add_argument('--version', action='version', version=f'AlphaCut v{__version__}')
 
     args = parser.parse_args()
@@ -4130,6 +4242,11 @@ def main():
     if args.input:
         run_cli(args)
         return
+
+    if not _HAS_QT:
+        print("ERROR: PyQt6 is required for GUI mode. Install with: pip install PyQt6")
+        print("For CLI mode, use: python AlphaCut.py -i video.mp4 -f webm")
+        sys.exit(1)
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion'); app.setStyleSheet(DARK_STYLE); app.setWindowIcon(get_app_icon())

@@ -6,8 +6,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-cli.txt .
+RUN pip install --no-cache-dir -r requirements-cli.txt
 
 COPY AlphaCut.py models.json locale_template.json ./
 
