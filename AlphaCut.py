@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.5.0 — AI Video Background Removal
+AlphaCut v1.6.0 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -10,7 +10,10 @@ MIT License — Copyright (c) 2025-2026 SysAdminDoc
 https://github.com/SysAdminDoc/AlphaCut
 """
 
-__version__ = "1.5.0"
+import multiprocessing
+multiprocessing.freeze_support()
+
+__version__ = "1.6.0"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -46,7 +49,12 @@ sys.excepthook = _exception_handler
 # ═══════════════════════════════════════════════════════════════════════════════
 # BOOTSTRAP
 # ═══════════════════════════════════════════════════════════════════════════════
+def _is_frozen():
+    return getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS")
+
 def _pip_install(package, verbose=False):
+    if _is_frozen():
+        return False
     for flags in [[], ['--user'], ['--break-system-packages']]:
         try:
             cmd = [sys.executable, '-m', 'pip', 'install', package] + flags
@@ -183,7 +191,17 @@ except ImportError:
     QEasingCurve = _QtStub()
     QUrl = _QtStub()
     Qt = _QtStub()
-    # Widget stubs not needed — GUI classes won't be instantiated in CLI mode
+    class _WidgetStub:
+        def __init__(self, *args, **kwargs): pass
+        def __getattr__(self, name): return _QtStub()
+        def __call__(self, *args, **kwargs): return self
+    QApplication = QMainWindow = QWidget = QLabel = QPushButton = QProgressBar = QComboBox = _WidgetStub
+    QFileDialog = QGroupBox = QTableWidget = QTableWidgetItem = QHeaderView = _WidgetStub
+    QAbstractItemView = QLineEdit = QColorDialog = QDialog = QDialogButtonBox = _WidgetStub
+    QScrollArea = QSystemTrayIcon = QMenu = QGraphicsOpacityEffect = _WidgetStub
+    QSpinBox = QSlider = QCheckBox = QTextEdit = QGridLayout = QVBoxLayout = QHBoxLayout = _WidgetStub
+    QPixmap = QImage = QPainter = QColor = QPalette = QIcon = QAction = QPen = QClipboard = _WidgetStub
+    QDesktopServices = QDrag = QKeySequence = QDragEnterEvent = QDropEvent = QMouseEvent = _WidgetStub
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
@@ -194,10 +212,25 @@ APP_DIR = os.path.join(os.path.expanduser("~"), ".alphacut")
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 PRESETS_FILE = os.path.join(APP_DIR, "presets.json")
 MODELS_DIR = os.path.join(APP_DIR, "models")
+LOG_FILE = os.path.join(APP_DIR, "alphacut.log")
 GITHUB_REPO = "SysAdminDoc/AlphaCut"
 GITHUB_RELEASES_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 MODEL_BASE = "https://github.com/danielgatis/rembg/releases/download/v0.0.0"
+
+def _log_warning(message):
+    """Write non-fatal diagnostics to stderr and the AlphaCut log file."""
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] WARNING: {message}"
+    try:
+        print(line, file=sys.stderr)
+    except Exception:
+        return
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(line + "\n")
+    except OSError:
+        return
 
 def _load_model_registry():
     """Load model registry from models.json, falling back to hardcoded defaults."""
@@ -216,8 +249,9 @@ def _load_model_registry():
             }
         if models:
             return models
-    except Exception:
-        pass
+    except Exception as e:
+        if os.path.isfile(registry_path):
+            _log_warning(f"Model registry load failed: {e}")
     return {
         "u2net_human_seg (People — Recommended)": {
             "file": "u2net_human_seg.onnx", "url": f"{MODEL_BASE}/u2net_human_seg.onnx",
@@ -269,6 +303,25 @@ OUTPUT_FORMATS = {
     "PNG Image Sequence": "png_seq",
 }
 
+HARDWARE_OUTPUT_FORMATS = {
+    "MP4 H.264 NVENC (.mp4) - NVIDIA GPU": "mp4_nvenc",
+    "MP4 H.265/HEVC NVENC (.mp4) - NVIDIA GPU": "hevc_nvenc",
+    "MP4 H.264 QSV (.mp4) - Intel GPU": "mp4_qsv",
+    "MP4 H.265/HEVC QSV (.mp4) - Intel GPU": "hevc_qsv",
+}
+
+OUTPUT_EXTENSIONS = {
+    'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4',
+    'matte': '.mov', 'mp4': '.mp4', 'hevc': '.mp4', 'webp_anim': '.webp',
+    'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4', 'png': '.png',
+    'mp4_nvenc': '.mp4', 'hevc_nvenc': '.mp4', 'mp4_qsv': '.mp4', 'hevc_qsv': '.mp4',
+}
+
+ALL_OUTPUT_FORMAT_VALUES = tuple(dict.fromkeys(
+    list(OUTPUT_FORMATS.values()) + list(HARDWARE_OUTPUT_FORMATS.values())
+))
+_HW_ENCODER_CACHE = None
+
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.ts', '.mts'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'}
 
@@ -283,10 +336,29 @@ BG_COLORS = {
     "Image File...": "image",
 }
 
+BG_COLOR_LOCALE_KEYS = {
+    "None (Transparent)": "transparent",
+    "Solid — Black": "black",
+    "Solid — White": "white",
+    "Solid — Green (#00FF00)": "green",
+    "Solid — Blue (#0000FF)": "blue",
+    "Solid — Gray (#808080)": "gray",
+    "Custom Color...": "custom",
+    "Image File...": "image",
+}
+
 SMART_PRESETS = {
     "Person talking to camera": 0, "Full body / movement": 3,
     "General object / product": 1, "Anime / illustration": 5,
     "Best quality (slow)": 6,
+}
+
+SMART_PRESET_LOCALE_KEYS = {
+    "Person talking to camera": "person_talking",
+    "Full body / movement": "full_body",
+    "General object / product": "general_object",
+    "Anime / illustration": "anime",
+    "Best quality (slow)": "best_quality",
 }
 
 # Auto-naming tokens: {name} {model} {format} {date} {time}
@@ -300,21 +372,80 @@ NAMING_PATTERNS = [
 # ═══════════════════════════════════════════════════════════════════════════════
 # i18n SCAFFOLD
 # ═══════════════════════════════════════════════════════════════════════════════
+def format_extension(fmt):
+    """Return the output extension for a format id."""
+    return OUTPUT_EXTENSIONS.get(fmt, '.mov')
+
+def normalize_encoder_format(fmt):
+    """Map hardware encoder variants to their equivalent size/extension family."""
+    return {
+        'mp4_nvenc': 'mp4',
+        'mp4_qsv': 'mp4',
+        'hevc_nvenc': 'hevc',
+        'hevc_qsv': 'hevc',
+    }.get(fmt, fmt)
+
+def detect_hardware_encoders(ffmpeg=None):
+    """Return available FFmpeg hardware encoder names."""
+    global _HW_ENCODER_CACHE
+    use_cache = ffmpeg is None
+    if use_cache and _HW_ENCODER_CACHE is not None:
+        return set(_HW_ENCODER_CACHE)
+    ffmpeg = ffmpeg or find_ffmpeg()
+    if not ffmpeg:
+        return set()
+    try:
+        result = subprocess.run([ffmpeg, '-hide_banner', '-encoders'],
+                                capture_output=True, text=True, timeout=10,
+                                creationflags=_SUBPROCESS_FLAGS)
+    except Exception as e:
+        _log_warning(f"Hardware encoder detection failed: {e}")
+        return set()
+    if result.returncode != 0:
+        _log_warning(f"Hardware encoder detection exited {result.returncode}: {(result.stderr or '')[-300:]}")
+        return set()
+    output = (result.stdout or '').lower()
+    encoders = {name for name in ('h264_nvenc', 'hevc_nvenc', 'h264_qsv', 'hevc_qsv')
+                if name in output}
+    if use_cache:
+        _HW_ENCODER_CACHE = set(encoders)
+    return encoders
+
+def available_output_formats():
+    """Return CPU formats plus hardware formats detected on this machine."""
+    formats = dict(OUTPUT_FORMATS)
+    encoders = detect_hardware_encoders()
+    if 'h264_nvenc' in encoders:
+        formats["MP4 H.264 NVENC (.mp4) - NVIDIA GPU"] = "mp4_nvenc"
+    if 'hevc_nvenc' in encoders:
+        formats["MP4 H.265/HEVC NVENC (.mp4) - NVIDIA GPU"] = "hevc_nvenc"
+    if 'h264_qsv' in encoders:
+        formats["MP4 H.264 QSV (.mp4) - Intel GPU"] = "mp4_qsv"
+    if 'hevc_qsv' in encoders:
+        formats["MP4 H.265/HEVC QSV (.mp4) - Intel GPU"] = "hevc_qsv"
+    return formats
+
 _LOCALE = {}
 
 def _load_locale():
     """Load locale overrides from ~/.alphacut/locale.json if present."""
     global _LOCALE
     locale_file = os.path.join(APP_DIR, 'locale.json')
+    if not os.path.isfile(locale_file):
+        return
     try:
         with open(locale_file, 'r', encoding='utf-8') as f:
             _LOCALE.update(json.load(f))
-    except Exception:
-        pass
+    except Exception as e:
+        _log_warning(f"Locale load failed: {e}")
 
 def _tr(key, default=None):
     """Translate a string key. Returns the locale override or the default English text."""
     return _LOCALE.get(key, default if default is not None else key)
+
+def _trf(key, default, **kwargs):
+    """Translate and format a string with named fields."""
+    return _tr(key, default).format(**kwargs)
 
 _load_locale()
 
@@ -337,26 +468,36 @@ def get_app_icon():
 # SETTINGS / PRESETS / RECENT FILES
 # ═══════════════════════════════════════════════════════════════════════════════
 def load_settings():
+    if not os.path.isfile(SETTINGS_FILE):
+        return {}
     try:
         with open(SETTINGS_FILE, 'r') as f: return json.load(f)
-    except Exception: return {}
+    except Exception as e:
+        _log_warning(f"Settings load failed: {e}")
+        return {}
 
 def save_settings(data):
     os.makedirs(APP_DIR, exist_ok=True)
     try:
         with open(SETTINGS_FILE, 'w') as f: json.dump(data, f, indent=2)
-    except Exception: pass
+    except Exception as e:
+        _log_warning(f"Settings save failed: {e}")
 
 def load_presets():
+    if not os.path.isfile(PRESETS_FILE):
+        return {}
     try:
         with open(PRESETS_FILE, 'r') as f: return json.load(f)
-    except Exception: return {}
+    except Exception as e:
+        _log_warning(f"Preset load failed: {e}")
+        return {}
 
 def save_presets(data):
     os.makedirs(APP_DIR, exist_ok=True)
     try:
         with open(PRESETS_FILE, 'w') as f: json.dump(data, f, indent=2)
-    except Exception: pass
+    except Exception as e:
+        _log_warning(f"Preset save failed: {e}")
 
 def get_recent_files():
     s = load_settings()
@@ -377,8 +518,7 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     now = time.strftime("%Y%m%d"), time.strftime("%H%M%S")
     name = pattern.replace('{name}', base).replace('{model}', model_short)
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
-    ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'hevc': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
-    ext = ext_map.get(fmt, '.mov')
+    ext = format_extension(fmt)
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
 
 def reveal_in_explorer(path):
@@ -912,10 +1052,15 @@ def find_ffprobe():
 
 def get_video_info(filepath):
     ffprobe = find_ffprobe()
-    if not ffprobe: return None
+    if not ffprobe:
+        _log_warning("ffprobe not found; video metadata unavailable")
+        return None
     try:
         cmd = [ffprobe, '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', filepath]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_SUBPROCESS_FLAGS)
+        if result.returncode != 0:
+            _log_warning(f"ffprobe failed for {os.path.basename(filepath)}: {(result.stderr or '')[-400:]}")
+            return None
         data = json.loads(result.stdout)
         has_audio = False
         for stream in data.get('streams', []):
@@ -931,11 +1076,14 @@ def get_video_info(filepath):
                         'fps': round(fps, 3), 'duration': dur,
                         'total_frames': int(fps * dur) if dur > 0 else 0,
                         'codec': stream.get('codec_name', 'unknown'), 'has_audio': has_audio}
-    except Exception: pass
+        _log_warning(f"ffprobe found no video stream in {os.path.basename(filepath)}")
+    except Exception as e:
+        _log_warning(f"Video metadata read failed for {os.path.basename(filepath)}: {e}")
     return None
 
 def estimate_output_size(info, fmt):
     if not info: return 0
+    fmt = normalize_encoder_format(fmt)
     px = info['width'] * info['height']; frames = info['total_frames']
     bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'hevc': px*0.06, 'av1': px*0.06, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
@@ -945,6 +1093,24 @@ def pil_to_qimage(pil_img):
         raise RuntimeError("pil_to_qimage requires PyQt6")
     img = pil_img.convert('RGBA'); data = img.tobytes('raw', 'RGBA')
     return QImage(data, img.width, img.height, img.width * 4, QImage.Format.Format_RGBA8888).copy()
+
+def build_mask_preview_qimages(source_img, mask):
+    """Build B/W, gray, and red/green overlay preview images for a mask."""
+    mask_gray = mask.convert('L')
+    mask_bw = mask_gray.point(lambda v: 255 if v >= 128 else 0)
+    src = source_img.convert('RGB')
+    m = np.array(mask_gray, dtype=np.float32) / 255.0
+    rgb = np.array(src, dtype=np.float32)
+    keep = np.array([34, 197, 94], dtype=np.float32)
+    remove = np.array([239, 68, 68], dtype=np.float32)
+    overlay_color = keep[None, None, :] * m[:, :, None] + remove[None, None, :] * (1.0 - m[:, :, None])
+    overlay = np.clip(rgb * 0.55 + overlay_color * 0.45, 0, 255).astype(np.uint8)
+    overlay_img = Image.fromarray(overlay, 'RGB')
+    return (
+        pil_to_qimage(mask_bw.convert('RGB')),
+        pil_to_qimage(mask_gray.convert('RGB')),
+        pil_to_qimage(overlay_img),
+    )
 
 def _ftime(s):
     if s < 60: return f"{s:.0f}s"
@@ -1057,7 +1223,8 @@ class ProcessingWorker(QThread):
                  edge_softness=0, mask_shift=0, temporal_smooth=0, keep_audio=True,
                  frame_skip=1, invert_mask=False, spill_strength=0, spill_color='green',
                  shadow_strength=0, bg_color=None, bg_image_path=None, resume_from=0,
-                 quality=70, roi=None, mask_edits=None, gpu_device=-1, fp16=False):
+                 quality=70, roi=None, mask_edits=None, gpu_device=-1, fp16=False,
+                 limit_seconds=None):
         super().__init__()
         self.input_path = input_path; self.output_path = output_path
         self.model_key = model_key; self.output_format = output_format
@@ -1073,6 +1240,7 @@ class ProcessingWorker(QThread):
         self.mask_edits = mask_edits or []
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
         self.fp16 = fp16
+        self.limit_seconds = limit_seconds
         self._cancelled = False
 
     def cancel(self): self._cancelled = True
@@ -1092,6 +1260,12 @@ class ProcessingWorker(QThread):
         info = get_video_info(self.input_path)
         if not info:
             self.error.emit("Could not read video."); return
+        if self.limit_seconds:
+            limit = max(0.1, min(float(self.limit_seconds), info.get('duration', float(self.limit_seconds)) or float(self.limit_seconds)))
+            info = dict(info)
+            info['duration'] = limit
+            info['total_frames'] = max(1, int(info['fps'] * limit))
+            self.log.emit(f"Preview duration: {limit:.1f}s")
         fps = info['fps']; w, h = info['width'], info['height']
         self.log.emit(f"{w}x{h} @ {fps}fps | ~{info['total_frames']} frames | {info['duration']:.1f}s")
         if info.get('has_audio'):
@@ -1124,7 +1298,10 @@ class ProcessingWorker(QThread):
             self.status.emit("Extracting frames...")
             self.progress.emit(0)
             expected_frames = info.get('total_frames', 0)
-            cmd = [ffmpeg, '-v', 'warning', '-i', self.input_path, '-fps_mode', 'cfr']
+            cmd = [ffmpeg, '-v', 'warning']
+            if self.limit_seconds:
+                cmd += ['-t', f"{info['duration']:.3f}"]
+            cmd += ['-i', self.input_path, '-fps_mode', 'cfr']
             if self.max_res > 0 and max(w, h) > self.max_res:
                 cmd += ['-vf', f'scale={sw}:{sh}']
             frame_pattern = os.path.join(frames_in, 'frame_%06d.bmp')
@@ -1569,8 +1746,7 @@ class ProcessingWorker(QThread):
 
         first = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))[0]
         fi = Image.open(first); fw, fh = fi.size; fi.close()
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'hevc': '.mp4', 'fg_alpha': '.mp4', 'av1': '.mp4'}
-        out_file = os.path.splitext(self.output_path)[0] + ext_map.get(fmt, '.mov')
+        out_file = os.path.splitext(self.output_path)[0] + format_extension(fmt)
 
         # Quality mapping per format:
         # q=0 (smallest) → highest CRF / lowest bitrate
@@ -1594,6 +1770,18 @@ class ProcessingWorker(QThread):
                    '-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
                    '-movflags', '+faststart']
             self.log.emit(f"MP4 quality: CRF={crf}")
+        elif fmt == 'mp4_nvenc':
+            cq = int(32 - (q / 100) * 18)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq:v', str(cq), '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart']
+            self.log.emit(f"MP4 NVENC quality: CQ={cq}")
+        elif fmt == 'mp4_qsv':
+            gq = int(32 - (q / 100) * 18)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'h264_qsv', '-global_quality', str(gq), '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart']
+            self.log.emit(f"MP4 QSV quality: global_quality={gq}")
         elif fmt == 'greenscreen':
             # CRF: q=0→30, q=50→23, q=100→14
             crf = int(30 - (q / 100) * 16)
@@ -1608,6 +1796,18 @@ class ProcessingWorker(QThread):
                    '-c:v', 'libx265', '-preset', 'medium', '-crf', str(crf), '-pix_fmt', 'yuv420p',
                    '-movflags', '+faststart', '-tag:v', 'hvc1']
             self.log.emit(f"HEVC quality: CRF={crf}")
+        elif fmt == 'hevc_nvenc':
+            cq = int(34 - (q / 100) * 18)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'hevc_nvenc', '-preset', 'p4', '-cq:v', str(cq), '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart', '-tag:v', 'hvc1']
+            self.log.emit(f"HEVC NVENC quality: CQ={cq}")
+        elif fmt == 'hevc_qsv':
+            gq = int(34 - (q / 100) * 18)
+            cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
+                   '-c:v', 'hevc_qsv', '-global_quality', str(gq), '-pix_fmt', 'yuv420p',
+                   '-movflags', '+faststart', '-tag:v', 'hvc1']
+            self.log.emit(f"HEVC QSV quality: global_quality={gq}")
         elif fmt == 'av1':
             crf = int(40 - (q / 100) * 22)
             cmd = [ffmpeg, '-y', '-v', 'warning', '-framerate', str(fps), '-i', pat,
@@ -1621,7 +1821,7 @@ class ProcessingWorker(QThread):
 
         if self.keep_audio and info.get('has_audio') and fmt not in ('png_seq', 'matte', 'webp_anim', 'gif_anim'):
             cmd += ['-i', self.input_path, '-map', '0:v', '-map', '1:a',
-                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if fmt in ('greenscreen', 'mp4', 'hevc', 'av1') else 'copy'), '-shortest']
+                    '-c:a', 'libopus' if fmt == 'webm' else ('aac' if normalize_encoder_format(fmt) in ('greenscreen', 'mp4', 'hevc', 'av1') else 'copy'), '-shortest']
         # Add -progress pipe:1 for real-time encode progress
         cmd += ['-progress', 'pipe:1', out_file]
         self.log.emit(f"Encoding: {fmt}...")
@@ -1649,7 +1849,9 @@ class ProcessingWorker(QThread):
                 except (ValueError, IndexError):
                     pass
         stderr_out = proc.stderr.read() if proc.stderr else ''
-        if proc.returncode != 0: self.log.emit(f"FFmpeg: {stderr_out[-400:]}")
+        if proc.returncode != 0:
+            self.log.emit(f"FFmpeg: {stderr_out[-400:]}")
+            return None
         self.progress.emit(100)
         return out_file
 
@@ -1683,21 +1885,37 @@ class BatchWorker(QThread):
             self.job_started.emit(i, os.path.basename(job['input']))
             self.log.emit(f"\n{'='*40}\nBatch [{i+1}/{len(self.jobs)}]: {os.path.basename(job['input'])}")
 
-            worker = ProcessingWorker(
-                job['input'], job['output'], job['model_key'], job['format'],
-                job['max_res'], job['edge'], job['shift'], job['temporal'], job['audio'],
-                frame_skip=job.get('frame_skip', 1),
-                invert_mask=job.get('invert_mask', False),
-                spill_strength=job.get('spill_strength', 0),
-                spill_color=job.get('spill_color', 'green'),
-                shadow_strength=job.get('shadow_strength', 0),
-                bg_color=job.get('bg_color'),
-                bg_image_path=job.get('bg_image_path'),
-                quality=job.get('quality', 70),
-                roi=job.get('roi'),
-                mask_edits=job.get('mask_edits'),
-                gpu_device=job.get('gpu_device', -1),
-                fp16=job.get('fp16', False))
+            is_image = job.get('type') == 'image'
+            if is_image:
+                worker = ImageProcessWorker(
+                    job['input'], job['output'], job['model_key'], job['max_res'],
+                    edge_softness=job['edge'], mask_shift=job['shift'],
+                    invert_mask=job.get('invert_mask', False),
+                    spill_strength=job.get('spill_strength', 0),
+                    spill_color=job.get('spill_color', 'green'),
+                    shadow_strength=job.get('shadow_strength', 0),
+                    bg_color=job.get('bg_color'),
+                    bg_image_path=job.get('bg_image_path'),
+                    roi=job.get('roi'),
+                    mask_edits=job.get('mask_edits'),
+                    gpu_device=job.get('gpu_device', -1),
+                    fp16=job.get('fp16', False))
+            else:
+                worker = ProcessingWorker(
+                    job['input'], job['output'], job['model_key'], job['format'],
+                    job['max_res'], job['edge'], job['shift'], job['temporal'], job['audio'],
+                    frame_skip=job.get('frame_skip', 1),
+                    invert_mask=job.get('invert_mask', False),
+                    spill_strength=job.get('spill_strength', 0),
+                    spill_color=job.get('spill_color', 'green'),
+                    shadow_strength=job.get('shadow_strength', 0),
+                    bg_color=job.get('bg_color'),
+                    bg_image_path=job.get('bg_image_path'),
+                    quality=job.get('quality', 70),
+                    roi=job.get('roi'),
+                    mask_edits=job.get('mask_edits'),
+                    gpu_device=job.get('gpu_device', -1),
+                    fp16=job.get('fp16', False))
 
             # Wire signals to batch relay
             worker.progress.connect(lambda pct, idx=i: self.job_progress.emit(idx, pct))
@@ -1709,15 +1927,14 @@ class BatchWorker(QThread):
 
             # Run synchronously (we're already on a thread)
             try:
-                worker._process()
+                worker.run() if is_image else worker._process()
                 if self._cancelled:
                     self.job_error.emit(i, "Cancelled")
                 else:
                     # Check if output exists
                     out = job['output']
-                    ext_map = {'prores': '.mov', 'webm': '.webm', 'greenscreen': '.mp4', 'matte': '.mov', 'png_seq': '', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
-                    if job['format'] != 'png_seq':
-                        out = os.path.splitext(out)[0] + ext_map.get(job['format'], '.mov')
+                    if not is_image and job['format'] != 'png_seq':
+                        out = os.path.splitext(out)[0] + format_extension(job['format'])
                     if os.path.exists(out):
                         self.job_finished.emit(i, out)
                         completed += 1
@@ -1778,10 +1995,7 @@ class ChromaKeyWorker(QThread):
                          f"similarity={self.similarity:.3f}:blend={self.blend:.3f}")
 
         # Build output path with correct extension
-        _ext_map = {'mp4': '.mp4', 'webm': '.webm', 'prores': '.mov',
-                    'matte': '.mov', 'png_seq': '', 'gif_anim': '.gif',
-                    'webp_anim': '.webp', 'fg_alpha': '.mp4', 'av1': '.mp4'}
-        out = os.path.splitext(self.output_path)[0] + _ext_map.get(fmt, '.mov')
+        out = os.path.splitext(self.output_path)[0] + format_extension(fmt)
 
         self.status.emit(f"Chroma-key removal ({self.chroma_color}) → {fmt}…")
 
@@ -1817,6 +2031,54 @@ class ChromaKeyWorker(QThread):
             cmd = [ffmpeg, '-i', self.input_path,
                    '-vf', f'{chroma_filter},lutrgb=r=0:g=0:b=0,alphaextract',
                    '-c:v', 'prores_ks', '-profile:v', '4444', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'hevc':
+            crf = int(34 - (q / 100) * 18)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'libx265', '-preset', 'medium', '-crf', str(crf),
+                   '-movflags', '+faststart', '-tag:v', 'hvc1', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'av1':
+            crf = int(40 - (q / 100) * 22)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'libsvtav1', '-crf', str(crf), '-preset', '6',
+                   '-movflags', '+faststart', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'mp4_nvenc':
+            cq = int(32 - (q / 100) * 18)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq:v', str(cq),
+                   '-movflags', '+faststart', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'hevc_nvenc':
+            cq = int(34 - (q / 100) * 18)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'hevc_nvenc', '-preset', 'p4', '-cq:v', str(cq),
+                   '-movflags', '+faststart', '-tag:v', 'hvc1', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'mp4_qsv':
+            gq = int(32 - (q / 100) * 18)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'h264_qsv', '-global_quality', str(gq),
+                   '-movflags', '+faststart', '-y',
+                   '-progress', 'pipe:1', '-nostats',
+                   out]
+        elif fmt == 'hevc_qsv':
+            gq = int(34 - (q / 100) * 18)
+            cmd = [ffmpeg, '-i', self.input_path,
+                   '-vf', f'{chroma_filter},format=yuv420p',
+                   '-c:v', 'hevc_qsv', '-global_quality', str(gq),
+                   '-movflags', '+faststart', '-tag:v', 'hvc1', '-y',
                    '-progress', 'pipe:1', '-nostats',
                    out]
         else:  # mp4 default
@@ -1886,32 +2148,37 @@ class ThumbnailLoader(QThread):
 
     def run(self):
         ffmpeg = find_ffmpeg()
-        if not ffmpeg:
-            return
         for row, path in self._jobs:
             if self._cancelled:
                 break
             try:
-                cmd = [ffmpeg, '-ss', '0.5', '-i', path,
-                       '-frames:v', '1', '-vf', 'scale=80:-1',
-                       '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
-                       '-loglevel', 'quiet']
-                proc = subprocess.run(cmd, capture_output=True, timeout=10,
-                                      creationflags=_SUBPROCESS_FLAGS)
-                if proc.returncode == 0 and proc.stdout:
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(proc.stdout)
+                if os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS:
+                    img = Image.open(path)
+                    img.thumbnail((80, 60), Image.Resampling.LANCZOS)
+                    pixmap = QPixmap.fromImage(pil_to_qimage(img.convert('RGBA')))
                     if not pixmap.isNull():
                         self.thumbnail_ready.emit(row, pixmap)
-            except Exception:
-                pass   # No thumbnail is not fatal
+                elif ffmpeg:
+                    cmd = [ffmpeg, '-ss', '0.5', '-i', path,
+                           '-frames:v', '1', '-vf', 'scale=80:-1',
+                           '-f', 'image2pipe', '-vcodec', 'png', 'pipe:1',
+                           '-loglevel', 'quiet']
+                    proc = subprocess.run(cmd, capture_output=True, timeout=10,
+                                          creationflags=_SUBPROCESS_FLAGS)
+                    if proc.returncode == 0 and proc.stdout:
+                        pixmap = QPixmap()
+                        pixmap.loadFromData(proc.stdout)
+                        if not pixmap.isNull():
+                            self.thumbnail_ready.emit(row, pixmap)
+            except Exception as e:
+                _log_warning(f"Thumbnail failed for {os.path.basename(path)}: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PREVIEW WORKER
 # ═══════════════════════════════════════════════════════════════════════════════
 class PreviewFrameWorker(QThread):
-    result = pyqtSignal(object, object)
+    result = pyqtSignal(object, object, object, object, object)
     status = pyqtSignal(str)
     error = pyqtSignal(str)
 
@@ -1930,26 +2197,39 @@ class PreviewFrameWorker(QThread):
         self.mask_edits = mask_edits or []
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
         self.fp16 = fp16
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         tmp = None
         try:
-            ffmpeg = find_ffmpeg()
-            if not ffmpeg: self.error.emit("FFmpeg not found."); return
-            info = get_video_info(self.input_path)
-            if not info: self.error.emit("Could not read video info."); return
-            seek_sec = max(0, info['duration'] * self.seek_pct)
-            w, h = info['width'], info['height']
-            fd, tmp = tempfile.mkstemp(suffix='.bmp', prefix='alphacut_preview_'); os.close(fd)
-            cmd = [ffmpeg, '-ss', f'{seek_sec:.2f}', '-i', self.input_path, '-frames:v', '1', '-y']
-            if self.max_res > 0 and max(w, h) > self.max_res:
-                ratio = self.max_res / max(w, h)
-                cmd += ['-vf', f'scale={int(w*ratio)//2*2}:{int(h*ratio)//2*2}']
-            cmd.append(tmp)
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_SUBPROCESS_FLAGS)
-            if proc.returncode != 0 or not os.path.isfile(tmp): self.error.emit("Failed to extract frame."); return
+            ext = os.path.splitext(self.input_path)[1].lower()
+            if ext in IMAGE_EXTENSIONS:
+                img = Image.open(self.input_path)
+                img.load()
+                w, h = img.size
+                if self.max_res > 0 and max(w, h) > self.max_res:
+                    ratio = self.max_res / max(w, h)
+                    img = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
+            else:
+                ffmpeg = find_ffmpeg()
+                if not ffmpeg: self.error.emit("FFmpeg not found."); return
+                info = get_video_info(self.input_path)
+                if not info: self.error.emit("Could not read video info."); return
+                seek_sec = max(0, info['duration'] * self.seek_pct)
+                w, h = info['width'], info['height']
+                fd, tmp = tempfile.mkstemp(suffix='.bmp', prefix='alphacut_preview_'); os.close(fd)
+                cmd = [ffmpeg, '-ss', f'{seek_sec:.2f}', '-i', self.input_path, '-frames:v', '1', '-y']
+                if self.max_res > 0 and max(w, h) > self.max_res:
+                    ratio = self.max_res / max(w, h)
+                    cmd += ['-vf', f'scale={int(w*ratio)//2*2}:{int(h*ratio)//2*2}']
+                cmd.append(tmp)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, creationflags=_SUBPROCESS_FLAGS)
+                if proc.returncode != 0 or not os.path.isfile(tmp): self.error.emit("Failed to extract frame."); return
+                img = Image.open(tmp)
             self.status.emit("Running AI model...")
-            img = Image.open(tmp)
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m),
                                 gpu_device=self.gpu_device, fp16=self.fp16)
 
@@ -1977,7 +2257,9 @@ class PreviewFrameWorker(QThread):
             if self.bg_color is not None or bg_image is not None:
                 result = AlphaCutEngine.composite_on_background(result, bg_color=self.bg_color, bg_image=bg_image)
 
-            self.result.emit(pil_to_qimage(img.convert('RGBA')), pil_to_qimage(result))
+            mask_bw, mask_gray, mask_overlay = build_mask_preview_qimages(img, current_mask)
+            self.result.emit(pil_to_qimage(img.convert('RGBA')), pil_to_qimage(result),
+                             mask_bw, mask_gray, mask_overlay)
         except Exception as e: self.error.emit(f"{type(e).__name__}: {e}")
         finally:
             if tmp and os.path.isfile(tmp):
@@ -2011,6 +2293,10 @@ class ImageProcessWorker(QThread):
         self.roi = roi; self.mask_edits = mask_edits or []
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
         self.fp16 = fp16
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
 
     def run(self):
         try:
@@ -2029,9 +2315,13 @@ class ImageProcessWorker(QThread):
             self.progress.emit(20)
             engine = get_engine(self.model_key, log_fn=self.log.emit,
                                 gpu_device=self.gpu_device, fp16=self.fp16)
+            if self._cancelled:
+                return
             self.status.emit("Removing background...")
             self.progress.emit(40)
             mask = engine.predict_mask(img, self.roi)
+            if self._cancelled:
+                return
             if self.edge_softness > 0 or self.mask_shift != 0:
                 mask = engine.refine_mask(mask, self.edge_softness, self.mask_shift, 0)
             if self.mask_edits:
@@ -2057,6 +2347,8 @@ class ImageProcessWorker(QThread):
                 result = AlphaCutEngine.composite_on_background(result, bg_color=self.bg_color, bg_image=bg_image)
             self.status.emit("Saving...")
             self.progress.emit(90)
+            if self._cancelled:
+                return
             out = self.output_path
             if not out.lower().endswith('.png'):
                 out = os.path.splitext(out)[0] + '.png'
@@ -2109,7 +2401,7 @@ class BenchmarkWorker(QThread):
             n = min(self.SAMPLE_FRAMES, total)
             w, h = info['width'], info['height']
 
-            self.status.emit(f"Benchmark: extracting {n} sample frames...")
+            self.status.emit(_trf("status.benchmark_extracting", "Benchmark: extracting {count} sample frames...", count=n))
             tmp_dir = tempfile.mkdtemp(prefix='alphacut_bench_')
 
             # Load background image once if needed
@@ -2135,7 +2427,7 @@ class BenchmarkWorker(QThread):
 
             if not frames: self.error.emit("No frames extracted."); return
 
-            self.status.emit(f"Benchmark: running AI + compositing on {len(frames)} frames...")
+            self.status.emit(_trf("status.benchmark_processing", "Benchmark: running AI + compositing on {count} frames...", count=len(frames)))
             engine = get_engine(self.model_key, log_fn=lambda m: self.status.emit(m),
                                 gpu_device=self.gpu_device, fp16=self.fp16)
 
@@ -2181,6 +2473,71 @@ class BenchmarkWorker(QThread):
 # ═══════════════════════════════════════════════════════════════════════════════
 # MODEL DOWNLOAD WORKER — cancellable download with progress signals
 # ═══════════════════════════════════════════════════════════════════════════════
+class QuickPreviewWorker(QThread):
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+    log = pyqtSignal(str)
+    preview = pyqtSignal(object)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, input_path, output_path, model_key, output_format, max_res,
+                 edge_softness=0, mask_shift=0, temporal_smooth=0, keep_audio=False,
+                 frame_skip=1, invert_mask=False, spill_strength=0, spill_color='green',
+                 shadow_strength=0, bg_color=None, bg_image_path=None, quality=70,
+                 roi=None, mask_edits=None, gpu_device=-1, fp16=False, duration=10):
+        super().__init__()
+        self.input_path = input_path; self.output_path = output_path
+        self.model_key = model_key; self.output_format = output_format
+        self.max_res = max_res; self.edge_softness = edge_softness
+        self.mask_shift = mask_shift; self.temporal_smooth = temporal_smooth
+        self.keep_audio = keep_audio; self.frame_skip = frame_skip
+        self.invert_mask = invert_mask; self.spill_strength = spill_strength
+        self.spill_color = spill_color; self.shadow_strength = shadow_strength
+        self.bg_color = bg_color; self.bg_image_path = bg_image_path
+        self.quality = quality; self.roi = roi; self.mask_edits = mask_edits or []
+        self.gpu_device = int(gpu_device) if gpu_device is not None else -1
+        self.fp16 = fp16; self.duration = duration
+        self._cancelled = False
+        self._worker = None
+
+    def cancel(self):
+        self._cancelled = True
+        if self._worker:
+            self._worker.cancel()
+
+    def run(self):
+        try:
+            fmt = self.output_format
+            if fmt == 'png_seq':
+                fmt = 'mp4'
+            worker = ProcessingWorker(
+                self.input_path, self.output_path, self.model_key, fmt, self.max_res,
+                edge_softness=self.edge_softness, mask_shift=self.mask_shift,
+                temporal_smooth=self.temporal_smooth, keep_audio=self.keep_audio,
+                frame_skip=self.frame_skip, invert_mask=self.invert_mask,
+                spill_strength=self.spill_strength, spill_color=self.spill_color,
+                shadow_strength=self.shadow_strength, bg_color=self.bg_color,
+                bg_image_path=self.bg_image_path, quality=self.quality,
+                roi=self.roi, mask_edits=self.mask_edits, gpu_device=self.gpu_device,
+                fp16=self.fp16, limit_seconds=self.duration)
+            self._worker = worker
+            worker.progress.connect(self.progress.emit)
+            worker.status.connect(self.status.emit)
+            worker.log.connect(self.log.emit)
+            worker.preview.connect(self.preview.emit)
+            worker.error.connect(self.error.emit)
+            worker._process()
+            out = os.path.splitext(self.output_path)[0] + format_extension(fmt)
+            if not self._cancelled and os.path.exists(out):
+                self.finished.emit(out)
+            elif not self._cancelled:
+                self.error.emit("Quick preview did not produce an output file.")
+        except Exception as e:
+            if not self._cancelled:
+                self.error.emit(f"{type(e).__name__}: {e}")
+
+
 class ModelDownloadWorker(QThread):
     progress = pyqtSignal(int, int)   # (downloaded_bytes, total_bytes)
     finished = pyqtSignal(str)        # model_path
@@ -2280,6 +2637,8 @@ class SplitPreviewWidget(QWidget):
         super().__init__()
         self.setMinimumSize(320, 160)
         self._original = None; self._processed = None
+        self._mask_bw = None; self._mask_gray = None; self._mask_overlay = None
+        self._view_mode = 'compare'
         self._split_pos = 0.5; self._dragging = False; self._show_split = False
         self._edit_mode = 'compare'
         self._brush_size = 32
@@ -2290,13 +2649,20 @@ class SplitPreviewWidget(QWidget):
         self._mask_strokes = []
         self.setMouseTracking(True)
 
-    def set_images(self, orig, proc):
+    def set_images(self, orig, proc, mask_bw=None, mask_gray=None, mask_overlay=None):
         self._original = orig; self._processed = proc
+        self._mask_bw = mask_bw; self._mask_gray = mask_gray; self._mask_overlay = mask_overlay
         self._show_split = orig is not None and proc is not None
         self._split_pos = 0.5; self.update()
 
     def set_frame(self, qimage):
-        self._processed = qimage; self._original = None; self._show_split = False; self.update()
+        self._processed = qimage; self._original = None
+        self._mask_bw = None; self._mask_gray = None; self._mask_overlay = None
+        self._show_split = False; self.update()
+
+    def set_view_mode(self, mode):
+        self._view_mode = mode or 'compare'
+        self.update()
 
     def set_edit_mode(self, mode):
         self._edit_mode = mode
@@ -2336,22 +2702,34 @@ class SplitPreviewWidget(QWidget):
     def edit_summary(self):
         parts = []
         if self._roi:
-            parts.append("ROI")
+            parts.append(_tr("mask_tool.roi", "ROI"))
         if self._mask_strokes:
-            parts.append(f"{len(self._mask_strokes)} stroke(s)")
-        return " + ".join(parts) if parts else "No mask edits"
+            parts.append(_trf("mask_edits.strokes", "{count} stroke(s)", count=len(self._mask_strokes)))
+        return " + ".join(parts) if parts else _tr("mask_edits.none", "No mask edits")
 
     def paintEvent(self, event):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor(10, 12, 16))
-        if self._show_split and self._original and self._processed: self._paint_split(p)
-        elif self._processed: self._paint_single(p, self._processed)
+        image = self._image_for_view_mode()
+        if self._view_mode == 'compare' and self._show_split and self._original and self._processed: self._paint_split(p)
+        elif image: self._paint_single(p, image)
         else:
             p.setPen(QColor(61, 68, 85))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Preview appears here")
-        if self._processed:
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, _tr("preview.empty", "Preview appears here"))
+        if self._processed and self._view_mode in ('compare', 'original', 'result'):
             self._paint_edit_overlay(p)
         p.end()
+
+    def _image_for_view_mode(self):
+        if self._view_mode == 'original':
+            return self._original or self._processed
+        if self._view_mode == 'mask_bw':
+            return self._mask_bw or self._processed
+        if self._view_mode == 'mask_gray':
+            return self._mask_gray or self._processed
+        if self._view_mode == 'mask_overlay':
+            return self._mask_overlay or self._processed
+        return self._processed
 
     def _image_rect_for(self, iw, ih):
         w, h = self.width(), self.height()
@@ -2388,7 +2766,8 @@ class SplitPreviewWidget(QWidget):
         p.drawLine(sx-5, hy, sx-2, hy-3); p.drawLine(sx-5, hy, sx-2, hy+3)
         p.drawLine(sx+5, hy, sx+2, hy-3); p.drawLine(sx+5, hy, sx+2, hy+3)
         p.setPen(QColor(200, 200, 220, 180)); f = p.font(); f.setPointSize(9); f.setBold(True); p.setFont(f)
-        p.drawText(ox + 8, oy + 18, "ORIGINAL"); p.drawText(ox + dw - 75, oy + 18, "RESULT")
+        p.drawText(ox + 8, oy + 18, _tr("preview.original", "ORIGINAL"))
+        p.drawText(ox + dw - 75, oy + 18, _tr("preview.result", "RESULT"))
 
     def _paint_single(self, p, qi):
         w, h = self.width(), self.height()
@@ -2542,15 +2921,24 @@ class JobTable(QTableWidget):
     # Column indices
     COL_THUMB    = 0
     COL_FILE     = 1
-    COL_STATUS   = 2
-    COL_PROGRESS = 3
-    COL_OUTPUT   = 4
+    COL_SETTINGS = 2
+    COL_STATUS   = 3
+    COL_PROGRESS = 4
+    COL_OUTPUT   = 5
 
     def __init__(self):
-        super().__init__(0, 5)
-        self.setHorizontalHeaderLabels(["", "File", "Status", "Progress", "Output"])
+        super().__init__(0, 6)
+        self.setHorizontalHeaderLabels([
+            "",
+            _tr("table.file", "File"),
+            _tr("table.settings", "Settings"),
+            _tr("table.status", "Status"),
+            _tr("table.progress", "Progress"),
+            _tr("table.output", "Output"),
+        ])
         self.horizontalHeader().setSectionResizeMode(self.COL_THUMB,    QHeaderView.ResizeMode.Fixed)
         self.horizontalHeader().setSectionResizeMode(self.COL_FILE,     QHeaderView.ResizeMode.Stretch)
+        self.horizontalHeader().setSectionResizeMode(self.COL_SETTINGS, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(self.COL_STATUS,   QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(self.COL_PROGRESS, QHeaderView.ResizeMode.ResizeToContents)
         self.horizontalHeader().setSectionResizeMode(self.COL_OUTPUT,   QHeaderView.ResizeMode.Stretch)
@@ -2560,15 +2948,17 @@ class JobTable(QTableWidget):
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setMaximumHeight(260)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-    def add_job(self, filename):
+    def add_job(self, filename, settings=""):
         row = self.rowCount(); self.insertRow(row)
         # Placeholder thumbnail cell
         thumb_lbl = QLabel(); thumb_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         thumb_lbl.setStyleSheet("background: transparent;")
         self.setCellWidget(row, self.COL_THUMB, thumb_lbl)
         self.setItem(row, self.COL_FILE,     QTableWidgetItem(filename))
-        self.setItem(row, self.COL_STATUS,   QTableWidgetItem("Queued"))
+        self.setItem(row, self.COL_SETTINGS, QTableWidgetItem(settings))
+        self.setItem(row, self.COL_STATUS,   QTableWidgetItem(_tr("status.queued", "Queued")))
         self.setItem(row, self.COL_PROGRESS, QTableWidgetItem("0%"))
         self.setItem(row, self.COL_OUTPUT,   QTableWidgetItem("--"))
         return row
@@ -2586,6 +2976,10 @@ class JobTable(QTableWidget):
     def update_status(self, row, status):
         item = self.item(row, self.COL_STATUS)
         if item: item.setText(status)
+
+    def update_settings(self, row, settings):
+        item = self.item(row, self.COL_SETTINGS)
+        if item: item.setText(settings)
 
     def update_progress(self, row, pct):
         item = self.item(row, self.COL_PROGRESS)
@@ -2748,17 +3142,17 @@ class UpdateChecker(QThread):
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"About {APP_NAME}")
+        self.setWindowTitle(_trf("dialog.about.title", "About {app}", app=APP_NAME))
         self.setFixedSize(420, 380)
         lay = QVBoxLayout(self); lay.setSpacing(12)
 
         # Header
         hdr = QLabel(f"<h2>{APP_NAME}</h2>"); hdr.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(hdr)
-        ver = QLabel(f"Version {APP_VERSION}"); ver.setObjectName("subtitle")
+        ver = QLabel(_trf("about.version", "Version {version}", version=APP_VERSION)); ver.setObjectName("subtitle")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(ver)
 
         # Description
-        desc = QLabel("AI-powered video background removal.\nDirect ONNX inference. Fully turnkey.")
+        desc = QLabel(_tr("about.description", "AI-powered video background removal.\nDirect ONNX inference. Fully turnkey."))
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter); desc.setWordWrap(True); lay.addWidget(desc)
 
         # System info
@@ -2767,23 +3161,23 @@ class AboutDialog(QDialog):
         gpu = 'CUDA' if 'CUDAExecutionProvider' in providers else 'CPU'
         info_text = (f"Python {sys.version.split()[0]}\n"
                      f"ONNX Runtime {_ort.__version__} ({gpu})\n"
-                     f"Platform: {sys.platform}\n"
-                     f"Models: {MODELS_DIR}")
+                     f"{_tr('about.platform', 'Platform')}: {sys.platform}\n"
+                     f"{_tr('about.models', 'Models')}: {MODELS_DIR}")
         info = QLabel(info_text); info.setObjectName("subtitle"); info.setWordWrap(True)
         info.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(info)
 
         # Links
         links_row = QHBoxLayout()
-        btn_github = QPushButton("GitHub"); btn_github.setObjectName("secondary")
+        btn_github = QPushButton(_tr("btn.github", "GitHub")); btn_github.setObjectName("secondary")
         btn_github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}")))
         links_row.addWidget(btn_github)
-        btn_issues = QPushButton("Report Bug"); btn_issues.setObjectName("secondary")
+        btn_issues = QPushButton(_tr("btn.report_bug", "Report Bug")); btn_issues.setObjectName("secondary")
         btn_issues.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}/issues")))
         links_row.addWidget(btn_issues)
         lay.addLayout(links_row)
 
         # Credits
-        credits = QLabel("MIT License | SysAdminDoc")
+        credits = QLabel(_tr("about.credits", "MIT License | SysAdminDoc"))
         credits.setObjectName("subtitle"); credits.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(credits)
         lay.addStretch()
@@ -2798,17 +3192,23 @@ class AboutDialog(QDialog):
 class ModelManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Model Manager")
+        self.setWindowTitle(_tr("dialog.model_manager.title", "Model Manager"))
         self.setMinimumSize(560, 420)
         lay = QVBoxLayout(self); lay.setSpacing(10)
 
-        hdr = QLabel("<h3>AI Models</h3>"); lay.addWidget(hdr)
-        desc = QLabel("Manage downloaded ONNX models. Models are cached locally after first use.")
+        hdr = QLabel(f"<h3>{_tr('model_manager.heading', 'AI Models')}</h3>"); lay.addWidget(hdr)
+        desc = QLabel(_tr("model_manager.description", "Manage downloaded ONNX models. Models are cached locally after first use."))
         desc.setWordWrap(True); desc.setObjectName("subtitle"); lay.addWidget(desc)
 
         # Model table
         self.table = QTableWidget(len(MODELS), 5); lay.addWidget(self.table)
-        self.table.setHorizontalHeaderLabels(["Model", "Input", "Status", "Size", ""])
+        self.table.setHorizontalHeaderLabels([
+            _tr("table.model", "Model"),
+            _tr("table.input", "Input"),
+            _tr("table.status", "Status"),
+            _tr("table.size", "Size"),
+            "",
+        ])
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
@@ -2823,14 +3223,14 @@ class ModelManagerDialog(QDialog):
             model_path = os.path.join(MODELS_DIR, os.path.basename(cfg['file']))
             if os.path.isfile(model_path):
                 size_mb = os.path.getsize(model_path) / (1024 * 1024)
-                self.table.setItem(i, 2, QTableWidgetItem("Downloaded"))
+                self.table.setItem(i, 2, QTableWidgetItem(_tr("status.downloaded", "Downloaded")))
                 self.table.setItem(i, 3, QTableWidgetItem(f"{size_mb:.1f} MB"))
-                btn = QPushButton("Delete"); btn.setObjectName("danger")
+                btn = QPushButton(_tr("btn.delete", "Delete")); btn.setObjectName("danger")
                 btn.setFixedWidth(70)
                 btn.clicked.connect(lambda _, r=i, f=os.path.basename(cfg['file']): self._delete_model(r, f))
                 self.table.setCellWidget(i, 4, btn)
             else:
-                self.table.setItem(i, 2, QTableWidgetItem("Not downloaded"))
+                self.table.setItem(i, 2, QTableWidgetItem(_tr("status.not_downloaded", "Not downloaded")))
                 self.table.setItem(i, 3, QTableWidgetItem("--"))
                 self.table.setItem(i, 4, QTableWidgetItem(""))
 
@@ -2842,15 +3242,15 @@ class ModelManagerDialog(QDialog):
             for f in os.listdir(MODELS_DIR):
                 fp = os.path.join(MODELS_DIR, f)
                 if os.path.isfile(fp): total_mb += os.path.getsize(fp) / (1024 * 1024)
-        self.lbl_total = QLabel(f"Total cached: {total_mb:.1f} MB")
+        self.lbl_total = QLabel(_trf("model_manager.total_cached", "Total cached: {mb:.1f} MB", mb=total_mb))
         self.lbl_total.setObjectName("subtitle"); lay.addWidget(self.lbl_total)
 
         # Buttons
         btn_row = QHBoxLayout()
-        btn_clear = QPushButton("Delete All Models"); btn_clear.setObjectName("danger")
+        btn_clear = QPushButton(_tr("btn.delete_all_models", "Delete All Models")); btn_clear.setObjectName("danger")
         btn_clear.clicked.connect(self._clear_all); btn_row.addWidget(btn_clear)
         btn_row.addStretch()
-        btn_close = QPushButton("Close"); btn_close.clicked.connect(self.accept)
+        btn_close = QPushButton(_tr("btn.close", "Close")); btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close); lay.addLayout(btn_row)
 
     def _delete_model(self, row, filename):
@@ -2860,7 +3260,7 @@ class ModelManagerDialog(QDialog):
             if os.path.isfile(path): os.remove(path)
             sidecar = path + '.sha256'
             if os.path.isfile(sidecar): os.remove(sidecar)
-            self.table.setItem(row, 2, QTableWidgetItem("Not downloaded"))
+            self.table.setItem(row, 2, QTableWidgetItem(_tr("status.not_downloaded", "Not downloaded")))
             self.table.setItem(row, 3, QTableWidgetItem("--"))
             self.table.removeCellWidget(row, 4)
             self.table.setItem(row, 4, QTableWidgetItem(""))
@@ -2879,7 +3279,7 @@ class ModelManagerDialog(QDialog):
                 except Exception: pass
         _engine_cache['key'] = None; _engine_cache['engine'] = None
         for i in range(self.table.rowCount()):
-            self.table.setItem(i, 2, QTableWidgetItem("Not downloaded"))
+            self.table.setItem(i, 2, QTableWidgetItem(_tr("status.not_downloaded", "Not downloaded")))
             self.table.setItem(i, 3, QTableWidgetItem("--"))
             self.table.removeCellWidget(i, 4)
             self.table.setItem(i, 4, QTableWidgetItem(""))
@@ -2891,7 +3291,7 @@ class ModelManagerDialog(QDialog):
             for f in os.listdir(MODELS_DIR):
                 fp = os.path.join(MODELS_DIR, f)
                 if os.path.isfile(fp): total_mb += os.path.getsize(fp) / (1024 * 1024)
-        self.lbl_total.setText(f"Total cached: {total_mb:.1f} MB")
+        self.lbl_total.setText(_trf("model_manager.total_cached", "Total cached: {mb:.1f} MB", mb=total_mb))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2903,10 +3303,10 @@ class AlphaCutWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setMinimumSize(1050, 800); self.resize(1200, 900)
         self.setWindowIcon(get_app_icon())
-        self._worker = None; self._batch_worker = None; self._preview_worker = None; self._model_dl_worker = None
+        self._worker = None; self._batch_worker = None; self._preview_worker = None; self._quick_preview_worker = None; self._model_dl_worker = None
         self._benchmark_worker = None
         self._input_path = None; self._video_info = None; self._is_image = False
-        self._last_output = None; self._batch_jobs = []
+        self._last_output = None; self._batch_jobs = []; self._batch_job_settings = {}
         self._bg_custom_color = None; self._bg_image_path = None
         self._update_checker = None
         self._chroma_result = None; self._chroma_detect_worker = None
@@ -2953,7 +3353,7 @@ class AlphaCutWindow(QMainWindow):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray = QSystemTrayIcon(get_app_icon(), self)
             menu = QMenu()
-            show = QAction("Show", self); show.triggered.connect(self._tray_show); menu.addAction(show)
+            show = QAction(_tr("menu.show", "Show"), self); show.triggered.connect(self._tray_show); menu.addAction(show)
             quit_a = QAction("Quit", self); quit_a.triggered.connect(self.close); menu.addAction(quit_a)
             self._tray.setContextMenu(menu)
             self._tray.activated.connect(lambda r: self._tray_show() if r == QSystemTrayIcon.ActivationReason.DoubleClick else None)
@@ -2986,8 +3386,8 @@ class AlphaCutWindow(QMainWindow):
         gl.addLayout(btn_row)
 
         self.info_w = QWidget(); ig = QGridLayout(self.info_w); ig.setContentsMargins(0,2,0,0); ig.setSpacing(4)
-        self.s_res = self._stat("--", "Resolution"); self.s_fps = self._stat("--", "FPS")
-        self.s_dur = self._stat("--", "Duration"); self.s_frm = self._stat("--", "Frames")
+        self.s_res = self._stat("--", _tr("stat.resolution", "Resolution")); self.s_fps = self._stat("--", _tr("stat.fps", "FPS"))
+        self.s_dur = self._stat("--", _tr("stat.duration", "Duration")); self.s_frm = self._stat("--", _tr("stat.frames", "Frames"))
         ig.addWidget(self.s_res, 0, 0); ig.addWidget(self.s_fps, 0, 1)
         ig.addWidget(self.s_dur, 1, 0); ig.addWidget(self.s_frm, 1, 1)
         self.info_w.setVisible(False); gl.addWidget(self.info_w); ll.addWidget(grp_in)
@@ -2995,47 +3395,51 @@ class AlphaCutWindow(QMainWindow):
         # Settings
         grp_set = QGroupBox(_tr("group.settings", "SETTINGS")); sl = QVBoxLayout(grp_set); sl.setSpacing(2)
         sl.setContentsMargins(10, 16, 10, 8)
-        lbl_smart = QLabel("What are you processing?"); lbl_smart.setObjectName("accent"); sl.addWidget(lbl_smart)
+        lbl_smart = QLabel(_tr("label.processing_type", "What are you processing?")); lbl_smart.setObjectName("accent"); sl.addWidget(lbl_smart)
         self.combo_smart = QComboBox()
-        self.combo_smart.addItem("-- Choose preset or pick model below --")
-        for p in SMART_PRESETS: self.combo_smart.addItem(p)
+        self.combo_smart.addItem(_tr("combo.processing_placeholder", "-- Choose preset or pick model below --"))
+        for p in SMART_PRESETS:
+            self.combo_smart.addItem(_tr(f"preset.{SMART_PRESET_LOCALE_KEYS[p]}", p))
         self.combo_smart.currentIndexChanged.connect(self._smart_pick); sl.addWidget(self.combo_smart)
-        sl.addWidget(QLabel("AI Model"))
+        sl.addWidget(QLabel(_tr("label.ai_model", "AI Model")))
         self.combo_model = QComboBox()
         for name in MODELS: self.combo_model.addItem(name)
         self.combo_model.currentIndexChanged.connect(self._update_res_suggestion)
+        self.combo_model.currentIndexChanged.connect(self._refresh_batch_settings_display)
         sl.addWidget(self.combo_model)
-        lbl2 = QLabel("Output Format"); lbl2.setObjectName("accent"); sl.addWidget(lbl2)
+        lbl2 = QLabel(_tr("label.output_format", "Output Format")); lbl2.setObjectName("accent"); sl.addWidget(lbl2)
         self.combo_fmt = QComboBox()
-        for name in OUTPUT_FORMATS: self.combo_fmt.addItem(name)
-        self.combo_fmt.currentIndexChanged.connect(self._update_estimate); sl.addWidget(self.combo_fmt)
+        self._format_items = available_output_formats()
+        for name, fmt_id in self._format_items.items():
+            self.combo_fmt.addItem(name, fmt_id)
+        self.combo_fmt.currentIndexChanged.connect(self._format_changed); sl.addWidget(self.combo_fmt)
         self.lbl_estimate = QLabel(""); self.lbl_estimate.setObjectName("subtitle"); sl.addWidget(self.lbl_estimate)
-        w_qual, self.sl_quality, self.lbl_quality = make_slider("Quality", 0, 100, 70, "%"); sl.addWidget(w_qual)
-        row = QHBoxLayout(); row.addWidget(QLabel("Max Resolution"))
+        w_qual, self.sl_quality, self.lbl_quality = make_slider(_tr("label.quality", "Quality"), 0, 100, 70, "%"); sl.addWidget(w_qual)
+        row = QHBoxLayout(); row.addWidget(QLabel(_tr("label.max_resolution", "Max Resolution")))
         self.spin_res = QSpinBox(); self.spin_res.setRange(0, 7680); self.spin_res.setSingleStep(240)
         self.spin_res.setValue(0); self.spin_res.setSpecialValueText("Original"); self.spin_res.setSuffix("px")
         row.addWidget(self.spin_res); sl.addLayout(row)
-        gpu_row = QHBoxLayout(); gpu_row.addWidget(QLabel("GPU Device"))
+        gpu_row = QHBoxLayout(); gpu_row.addWidget(QLabel(_tr("label.gpu_device", "GPU Device")))
         self.spin_gpu = QSpinBox(); self.spin_gpu.setRange(-1, 16); self.spin_gpu.setValue(-1)
         self.spin_gpu.setSpecialValueText("Auto")
         gpu_row.addWidget(self.spin_gpu); sl.addLayout(gpu_row)
-        self.chk_fp16 = QCheckBox("FP16 inference (GPU speedup)")
-        self.chk_fp16.setToolTip("Use half-precision floating point on GPU — ~2x faster, minimal quality loss")
+        self.chk_fp16 = QCheckBox(_tr("chk.fp16", "FP16 inference (GPU speedup)"))
+        self.chk_fp16.setToolTip(_tr("tip.fp16", "Use half-precision floating point on GPU — ~2x faster, minimal quality loss"))
         sl.addWidget(self.chk_fp16)
         self.chk_audio = QCheckBox(_tr("chk.keep_audio", "Keep original audio")); self.chk_audio.setChecked(True); sl.addWidget(self.chk_audio)
 
         # Naming pattern
-        name_row = QHBoxLayout(); name_row.addWidget(QLabel("Naming"))
+        name_row = QHBoxLayout(); name_row.addWidget(QLabel(_tr("label.naming", "Naming")))
         self.combo_naming = QComboBox()
         for pat in NAMING_PATTERNS: self.combo_naming.addItem(pat)
         name_row.addWidget(self.combo_naming, stretch=1); sl.addLayout(name_row)
 
         # Presets
         preset_row = QHBoxLayout()
-        self.combo_presets = QComboBox(); self.combo_presets.addItem("-- Presets --")
+        self.combo_presets = QComboBox(); self.combo_presets.addItem(_tr("combo.presets_placeholder", "-- Presets --"))
         self._refresh_presets(); self.combo_presets.currentIndexChanged.connect(self._load_preset)
         preset_row.addWidget(self.combo_presets, stretch=1)
-        btn_save_preset = QPushButton("Save"); btn_save_preset.setObjectName("small")
+        btn_save_preset = QPushButton(_tr("btn.save", "Save")); btn_save_preset.setObjectName("small")
         btn_save_preset.clicked.connect(self._save_preset); preset_row.addWidget(btn_save_preset)
         sl.addLayout(preset_row)
         ll.addWidget(grp_set)
@@ -3043,10 +3447,10 @@ class AlphaCutWindow(QMainWindow):
         # Refinement
         grp_ref = QGroupBox(_tr("group.refinement", "REFINEMENT")); rl2 = QVBoxLayout(grp_ref); rl2.setSpacing(2)
         rl2.setContentsMargins(10, 16, 10, 8)
-        w1, self.sl_edge, _ = make_slider("Edge Softness", 0, 100, 0); rl2.addWidget(w1)
-        w2, self.sl_shift, _ = make_slider("Mask Shift", -20, 20, 0); rl2.addWidget(w2)
-        w3, self.sl_temporal, _ = make_slider("Temporal Smooth", 0, 7, 0, "f"); rl2.addWidget(w3)
-        w4, self.sl_frame_skip, _ = make_slider("Frame Skip", 1, 10, 1, "x"); rl2.addWidget(w4)
+        w1, self.sl_edge, _ = make_slider(_tr("label.edge_softness", "Edge Softness"), 0, 100, 0); rl2.addWidget(w1)
+        w2, self.sl_shift, _ = make_slider(_tr("label.mask_shift", "Mask Shift"), -20, 20, 0); rl2.addWidget(w2)
+        w3, self.sl_temporal, _ = make_slider(_tr("label.temporal_smooth", "Temporal Smooth"), 0, 7, 0, "f"); rl2.addWidget(w3)
+        w4, self.sl_frame_skip, _ = make_slider(_tr("label.frame_skip", "Frame Skip"), 1, 10, 1, "x"); rl2.addWidget(w4)
         ll.addWidget(grp_ref)
 
         # Compositing
@@ -3055,17 +3459,19 @@ class AlphaCutWindow(QMainWindow):
 
         self.chk_invert = QCheckBox(_tr("chk.invert_mask", "Invert mask (remove subject)")); cl.addWidget(self.chk_invert)
 
-        w5, self.sl_spill, _ = make_slider("Spill Suppress", 0, 100, 0, "%"); cl.addWidget(w5)
-        spill_row = QHBoxLayout(); spill_row.addWidget(QLabel("Spill Color"))
+        w5, self.sl_spill, _ = make_slider(_tr("label.spill_suppress", "Spill Suppress"), 0, 100, 0, "%"); cl.addWidget(w5)
+        spill_row = QHBoxLayout(); spill_row.addWidget(QLabel(_tr("label.spill_color", "Spill Color")))
         self.combo_spill = QComboBox()
-        for sc in ['green', 'blue', 'red']: self.combo_spill.addItem(sc.capitalize(), sc)
+        for sc in ['green', 'blue', 'red']:
+            self.combo_spill.addItem(_tr(f"color.{sc}", sc.capitalize()), sc)
         spill_row.addWidget(self.combo_spill); cl.addLayout(spill_row)
 
-        w6, self.sl_shadow, _ = make_slider("Shadow Preserve", 0, 100, 0, "%"); cl.addWidget(w6)
+        w6, self.sl_shadow, _ = make_slider(_tr("label.shadow_preserve", "Shadow Preserve"), 0, 100, 0, "%"); cl.addWidget(w6)
 
-        bg_row = QHBoxLayout(); bg_row.addWidget(QLabel("Background"))
+        bg_row = QHBoxLayout(); bg_row.addWidget(QLabel(_tr("label.background", "Background")))
         self.combo_bg = QComboBox()
-        for name in BG_COLORS: self.combo_bg.addItem(name)
+        for name in BG_COLORS:
+            self.combo_bg.addItem(_tr(f"bg.{BG_COLOR_LOCALE_KEYS[name]}", name))
         self.combo_bg.currentIndexChanged.connect(self._bg_changed)
         bg_row.addWidget(self.combo_bg, stretch=1); cl.addLayout(bg_row)
 
@@ -3091,6 +3497,9 @@ class AlphaCutWindow(QMainWindow):
         self.btn_preview.setEnabled(False); self.btn_preview.setMinimumHeight(30)
         self.btn_preview.setShortcut(QKeySequence("Ctrl+P"))
         self.btn_preview.clicked.connect(self._preview_frame); act_row.addWidget(self.btn_preview)
+        self.btn_quick_preview = QPushButton(_tr("btn.preview_10s", "Preview 10s")); self.btn_quick_preview.setObjectName("secondary")
+        self.btn_quick_preview.setEnabled(False); self.btn_quick_preview.setMinimumHeight(30)
+        self.btn_quick_preview.clicked.connect(self._preview_clip); act_row.addWidget(self.btn_quick_preview)
         self.btn_benchmark = QPushButton(_tr("btn.benchmark", "Benchmark")); self.btn_benchmark.setObjectName("secondary")
         self.btn_benchmark.setEnabled(False); self.btn_benchmark.setMinimumHeight(30)
         self.btn_benchmark.clicked.connect(self._run_benchmark); act_row.addWidget(self.btn_benchmark)
@@ -3124,32 +3533,43 @@ class AlphaCutWindow(QMainWindow):
         self.preview = SplitPreviewWidget()
         self.preview.edits_changed.connect(self._sync_edit_summary)
         pl.addWidget(self.preview)
-        scrub_row = QHBoxLayout(); scrub_row.addWidget(QLabel("Position"))
+        view_row = QHBoxLayout(); view_row.addWidget(QLabel(_tr("label.view", "View")))
+        self.combo_preview_view = QComboBox()
+        self.combo_preview_view.addItem(_tr("preview_mode.compare", "Compare"), "compare")
+        self.combo_preview_view.addItem(_tr("preview_mode.original", "Original"), "original")
+        self.combo_preview_view.addItem(_tr("preview_mode.result", "Result"), "result")
+        self.combo_preview_view.addItem(_tr("preview_mode.mask_bw", "Mask B/W"), "mask_bw")
+        self.combo_preview_view.addItem(_tr("preview_mode.mask_gray", "Mask Gray"), "mask_gray")
+        self.combo_preview_view.addItem(_tr("preview_mode.mask_overlay", "Mask Overlay"), "mask_overlay")
+        self.combo_preview_view.currentIndexChanged.connect(self._preview_view_changed)
+        view_row.addWidget(self.combo_preview_view, stretch=1)
+        pl.addLayout(view_row)
+        scrub_row = QHBoxLayout(); scrub_row.addWidget(QLabel(_tr("label.position", "Position")))
         self.sl_scrub = QSlider(Qt.Orientation.Horizontal); self.sl_scrub.setRange(0, 100); self.sl_scrub.setValue(10)
         self.sl_scrub.setEnabled(False); scrub_row.addWidget(self.sl_scrub, stretch=1)
         self.lbl_scrub = QLabel("10%"); self.lbl_scrub.setObjectName("sliderVal"); scrub_row.addWidget(self.lbl_scrub)
         self.sl_scrub.valueChanged.connect(lambda v: self.lbl_scrub.setText(f"{v}%"))
         pl.addLayout(scrub_row)
-        edit_row = QHBoxLayout(); edit_row.addWidget(QLabel("Mask Tool"))
+        edit_row = QHBoxLayout(); edit_row.addWidget(QLabel(_tr("label.mask_tool", "Mask Tool")))
         self.combo_mask_tool = QComboBox()
-        self.combo_mask_tool.addItem("Compare", "compare")
-        self.combo_mask_tool.addItem("ROI", "roi")
-        self.combo_mask_tool.addItem("Paint Keep", "fg")
-        self.combo_mask_tool.addItem("Paint Remove", "bg")
+        self.combo_mask_tool.addItem(_tr("mask_tool.compare", "Compare"), "compare")
+        self.combo_mask_tool.addItem(_tr("mask_tool.roi", "ROI"), "roi")
+        self.combo_mask_tool.addItem(_tr("mask_tool.paint_keep", "Paint Keep"), "fg")
+        self.combo_mask_tool.addItem(_tr("mask_tool.paint_remove", "Paint Remove"), "bg")
         self.combo_mask_tool.currentIndexChanged.connect(self._preview_tool_changed)
         edit_row.addWidget(self.combo_mask_tool, stretch=1)
         self.spin_brush = QSpinBox(); self.spin_brush.setRange(4, 256); self.spin_brush.setValue(32); self.spin_brush.setSuffix("px")
         self.spin_brush.valueChanged.connect(self._brush_size_changed)
         edit_row.addWidget(self.spin_brush)
-        btn_undo_stroke = QPushButton("Undo"); btn_undo_stroke.setObjectName("small")
+        btn_undo_stroke = QPushButton(_tr("btn.undo", "Undo")); btn_undo_stroke.setObjectName("small")
         btn_undo_stroke.setShortcut(QKeySequence.StandardKey.Undo)
         btn_undo_stroke.clicked.connect(self._undo_stroke)
         edit_row.addWidget(btn_undo_stroke)
-        self.btn_clear_edits = QPushButton("Clear"); self.btn_clear_edits.setObjectName("small")
+        self.btn_clear_edits = QPushButton(_tr("btn.clear", "Clear")); self.btn_clear_edits.setObjectName("small")
         self.btn_clear_edits.clicked.connect(self._clear_mask_edits)
         edit_row.addWidget(self.btn_clear_edits)
         pl.addLayout(edit_row)
-        self.lbl_edit_summary = QLabel("No mask edits"); self.lbl_edit_summary.setObjectName("subtitle")
+        self.lbl_edit_summary = QLabel(_tr("mask_edits.none", "No mask edits")); self.lbl_edit_summary.setObjectName("subtitle")
         pl.addWidget(self.lbl_edit_summary)
         self._preview_tool_changed(0)
         rl.addWidget(grp_prev, stretch=3)
@@ -3158,6 +3578,7 @@ class AlphaCutWindow(QMainWindow):
         grp_batch = QGroupBox(_tr("group.batch", "BATCH QUEUE")); bl = QVBoxLayout(grp_batch)
         self.thumb_grid = ThumbnailGrid(); bl.addWidget(self.thumb_grid)
         self.job_table = JobTable(); bl.addWidget(self.job_table)
+        self.job_table.customContextMenuRequested.connect(self._job_context_menu)
         self.grp_batch = grp_batch; grp_batch.setVisible(False); rl.addWidget(grp_batch)
 
         grp_prog = QGroupBox(_tr("group.progress", "PROGRESS")); prl = QVBoxLayout(grp_prog); prl.setSpacing(6)
@@ -3192,7 +3613,9 @@ class AlphaCutWindow(QMainWindow):
         self.combo_bg.setAccessibleName("Background")
         self.combo_naming.setAccessibleName("Output naming pattern")
         self.combo_presets.setAccessibleName("Preset")
+        self.btn_quick_preview.setAccessibleName("Preview ten second sample")
         self.sl_scrub.setAccessibleName("Preview position")
+        self.combo_preview_view.setAccessibleName("Preview view mode")
         self.combo_mask_tool.setAccessibleName("Mask editing tool")
         self.spin_brush.setAccessibleName("Brush size")
         self.preview.setAccessibleName("Preview display")
@@ -3221,7 +3644,8 @@ class AlphaCutWindow(QMainWindow):
     def _smart_pick(self, index):
         if index <= 0: return
         name = list(SMART_PRESETS.keys())[index - 1]
-        self.combo_model.setCurrentIndex(SMART_PRESETS[name]); self._log(f"Preset: {name}")
+        label = _tr(f"preset.{SMART_PRESET_LOCALE_KEYS[name]}", name)
+        self.combo_model.setCurrentIndex(SMART_PRESETS[name]); self._log(_trf("log.preset", "Preset: {name}", name=label))
 
     def _animate_progress(self):
         self._glow_phase += 0.12; pulse = 0.5 + 0.5 * math.sin(self._glow_phase)
@@ -3233,7 +3657,7 @@ class AlphaCutWindow(QMainWindow):
     def _stop_glow(self): self._glow_timer.stop(); self.progress_bar.setStyleSheet("")
 
     def _update_tray_progress(self, pct):
-        if self._tray and self._tray.isVisible(): self._tray.setToolTip(f"{APP_NAME} — {pct}%")
+        if self._tray and self._tray.isVisible(): self._tray.setToolTip(_trf("tray.progress", "{app} — {pct}%", app=APP_NAME, pct=pct))
 
     def _update_memory_display(self, ram_pct):
         color = '#ef4444' if ram_pct > 85 else '#f59e0b' if ram_pct > 70 else '#4a5168'
@@ -3252,34 +3676,35 @@ class AlphaCutWindow(QMainWindow):
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
         comp = self._get_compositing_params()
         roi, mask_edits = self._mask_controls()
-        self.btn_benchmark.setEnabled(False); self.btn_benchmark.setText("Running...")
-        self.lbl_status.setText("Benchmarking...")
+        self.btn_benchmark.setEnabled(False); self.btn_benchmark.setText(_tr("status.running", "Running..."))
+        self.lbl_status.setText(_tr("status.benchmarking", "Benchmarking..."))
         self._benchmark_worker = BenchmarkWorker(
             self._input_path, model_key, self.spin_res.value(),
             edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            roi=roi, mask_edits=mask_edits, fp16=self.chk_fp16.isChecked())
+            roi=roi, mask_edits=mask_edits, gpu_device=self.spin_gpu.value(),
+            fp16=self.chk_fp16.isChecked())
         self._benchmark_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._benchmark_worker.result.connect(self._benchmark_done)
         self._benchmark_worker.error.connect(self._benchmark_err)
         self._benchmark_worker.start()
 
     def _benchmark_done(self, data):
-        self.btn_benchmark.setEnabled(True); self.btn_benchmark.setText("Benchmark")
+        self.btn_benchmark.setEnabled(True); self.btn_benchmark.setText(_tr("btn.benchmark", "Benchmark"))
         fps = data['fps']; eta = data['eta_str']; n = data['frames_tested']; total = data['total_frames']
-        self.lbl_status.setText(f"Benchmark: {fps:.1f} fps | ETA {eta} for {total} frames")
-        self._log(f"\nBenchmark ({n} frames): {fps:.2f} fps | Estimated total: {eta}")
-        self._log(f"  Inference: {data['elapsed']:.1f}s for {n} frames")
+        self.lbl_status.setText(_trf("status.benchmark_result", "Benchmark: {fps:.1f} fps | ETA {eta} for {total} frames", fps=fps, eta=eta, total=total))
+        self._log(_trf("log.benchmark_result", "\nBenchmark ({count} frames): {fps:.2f} fps | Estimated total: {eta}", count=n, fps=fps, eta=eta))
+        self._log(_trf("log.inference_time", "  Inference: {seconds:.1f}s for {count} frames", seconds=data['elapsed'], count=n))
         if data['ram_pct'] > 0:
-            self._log(f"  RAM: {data['ram_pct']:.0f}%")
+            self._log(_trf("log.ram", "  RAM: {ram:.0f}%", ram=data['ram_pct']))
             self._update_memory_display(data['ram_pct'])
-        self._toast_msg(f"Benchmark: {fps:.1f} fps | ETA {eta}")
+        self._toast_msg(_trf("toast.benchmark_result", "Benchmark: {fps:.1f} fps | ETA {eta}", fps=fps, eta=eta))
 
     def _benchmark_err(self, msg):
-        self.btn_benchmark.setEnabled(True); self.btn_benchmark.setText("Benchmark")
-        self._log(f"Benchmark error: {msg}"); self._toast_msg("Benchmark failed")
+        self.btn_benchmark.setEnabled(True); self.btn_benchmark.setText(_tr("btn.benchmark", "Benchmark"))
+        self._log(_trf("log.benchmark_error", "Benchmark error: {message}", message=msg)); self._toast_msg(_tr("toast.benchmark_failed", "Benchmark failed"))
 
     # ── Dialogs ──
     def _show_about(self):
@@ -3299,7 +3724,7 @@ class AlphaCutWindow(QMainWindow):
         self._update_checker = UpdateChecker()
         self._update_checker.result.connect(self._update_result_manual)
         self._update_checker.error.connect(lambda e: self._toast_msg(f"Update check failed: {e}"))
-        self.lbl_status.setText("Checking for updates...")
+        self.lbl_status.setText(_tr("status.checking_updates", "Checking for updates..."))
         self._update_checker.start()
 
     def _update_result_silent(self, data):
@@ -3313,7 +3738,7 @@ class AlphaCutWindow(QMainWindow):
             self._log(f"\nUpdate available: v{data['tag']}")
             if data.get('body'):
                 self._log(f"Release notes:\n{data['body']}")
-            self.lbl_status.setText(f"Update v{data['tag']} available")
+            self.lbl_status.setText(_trf("status.update_available", "Update v{tag} available", tag=data['tag']))
             url = data.get('url', '')
             if url.startswith(f"https://github.com/{GITHUB_REPO}"):
                 QDesktopServices.openUrl(QUrl(url))
@@ -3321,27 +3746,27 @@ class AlphaCutWindow(QMainWindow):
                 QDesktopServices.openUrl(QUrl(f"https://github.com/{GITHUB_REPO}/releases"))
         else:
             self._toast_msg(f"You're up to date (v{data['current']})")
-            self.lbl_status.setText("Ready — up to date")
+            self.lbl_status.setText(_tr("status.up_to_date", "Ready — up to date"))
 
     def _check_ffmpeg(self):
         ff = find_ffmpeg()
         if ff: self._log(f"FFmpeg: {ff}")
-        else: self._log("FFmpeg not found!"); self.lbl_status.setText("FFmpeg required")
+        else: self._log(_tr("log.ffmpeg_not_found", "FFmpeg not found!")); self.lbl_status.setText(_tr("status.ffmpeg_required", "FFmpeg required"))
 
     def _bg_changed(self, index):
         key = list(BG_COLORS.keys())[index]
         val = BG_COLORS[key]
         if val == "custom":
-            color = QColorDialog.getColor(QColor(0, 128, 0), self, "Pick Background Color")
+            color = QColorDialog.getColor(QColor(0, 128, 0), self, _tr("dialog.pick_background", "Pick Background Color"))
             if color.isValid():
                 self._bg_custom_color = (color.red(), color.green(), color.blue())
-                self.lbl_bg_info.setText(f"Custom: {color.name()}")
+                self.lbl_bg_info.setText(_trf("label.custom_color", "Custom: {color}", color=color.name()))
             else:
                 self.combo_bg.setCurrentIndex(0)
                 self.lbl_bg_info.setText("")
         elif val == "image":
             exts = " ".join(f"*{e}" for e in IMAGE_EXTENSIONS)
-            path, _ = QFileDialog.getOpenFileName(self, "Select Background Image", "",
+            path, _ = QFileDialog.getOpenFileName(self, _tr("dialog.select_background_image", "Select Background Image"), "",
                                                    f"Images ({exts});;All (*)")
             if path and os.path.isfile(path):
                 self._bg_image_path = path
@@ -3376,12 +3801,12 @@ class AlphaCutWindow(QMainWindow):
 
     # ── Presets ──
     def _refresh_presets(self):
-        self.combo_presets.clear(); self.combo_presets.addItem("-- Presets --")
+        self.combo_presets.clear(); self.combo_presets.addItem(_tr("combo.presets_placeholder", "-- Presets --"))
         for name in load_presets(): self.combo_presets.addItem(name)
 
     def _save_preset(self):
         from PyQt6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:")
+        name, ok = QInputDialog.getText(self, _tr("dialog.save_preset", "Save Preset"), _tr("label.preset_name", "Preset name:"))
         if not ok or not name.strip(): return
         presets = load_presets()
         presets[name.strip()] = {
@@ -3396,7 +3821,7 @@ class AlphaCutWindow(QMainWindow):
             'shadow_strength': self.sl_shadow.value(), 'bg_index': self.combo_bg.currentIndex(),
             'quality': self.sl_quality.value(),
         }
-        save_presets(presets); self._refresh_presets(); self._toast_msg(f"Preset saved: {name.strip()}")
+        save_presets(presets); self._refresh_presets(); self._toast_msg(_trf("toast.preset_saved", "Preset saved: {name}", name=name.strip()))
 
     def _load_preset(self, index):
         if index <= 0: return
@@ -3420,7 +3845,7 @@ class AlphaCutWindow(QMainWindow):
         if 'shadow_strength' in p: self.sl_shadow.setValue(p['shadow_strength'])
         if 'bg_index' in p: self.combo_bg.setCurrentIndex(min(p['bg_index'], self.combo_bg.count()-1))
         if 'quality' in p: self.sl_quality.setValue(p['quality'])
-        self._toast_msg(f"Loaded: {name}")
+        self._toast_msg(_trf("toast.preset_loaded", "Loaded: {name}", name=name))
 
     # ── Settings ──
     def _load_settings(self):
@@ -3473,14 +3898,14 @@ class AlphaCutWindow(QMainWindow):
     def _browse(self):
         v_exts = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
         i_exts = " ".join(f"*{e}" for e in IMAGE_EXTENSIONS)
-        path, _ = QFileDialog.getOpenFileName(self, "Select Video or Image", "",
+        path, _ = QFileDialog.getOpenFileName(self, _tr("dialog.select_media", "Select Video or Image"), "",
                                                f"Media ({v_exts} {i_exts});;Video ({v_exts});;Images ({i_exts});;All (*)")
         if path: self._load_video(path)
 
     def _browse_batch(self):
         v_exts = " ".join(f"*{e}" for e in VIDEO_EXTENSIONS)
         i_exts = " ".join(f"*{e}" for e in IMAGE_EXTENSIONS)
-        paths, _ = QFileDialog.getOpenFileNames(self, "Select Files", "",
+        paths, _ = QFileDialog.getOpenFileNames(self, _tr("dialog.select_files", "Select Files"), "",
                                                  f"Media ({v_exts} {i_exts});;All (*)")
         if paths:
             if len(paths) == 1: self._load_video(paths[0])
@@ -3488,7 +3913,7 @@ class AlphaCutWindow(QMainWindow):
 
     def _show_recent(self):
         recent = get_recent_files()
-        if not recent: self._toast_msg("No recent files"); return
+        if not recent: self._toast_msg(_tr("toast.no_recent_files", "No recent files")); return
         menu = QMenu(self)
         for p in recent[:15]:
             if os.path.isfile(p):
@@ -3500,6 +3925,7 @@ class AlphaCutWindow(QMainWindow):
     def _load_video(self, path):
         if not os.path.isfile(path): return
         self._input_path = path; self._batch_jobs = []
+        self._batch_job_settings = {}
         ext = os.path.splitext(path)[1].lower()
         self._is_image = ext in IMAGE_EXTENSIONS
         self.grp_batch.setVisible(False); self.job_table.clear_all(); self.thumb_grid.clear_all()
@@ -3523,15 +3949,16 @@ class AlphaCutWindow(QMainWindow):
             try:
                 im = Image.open(path); w, h = im.size; im.close()
                 self.s_res._val.setText(f"{w}x{h}")
-                self.s_fps._val.setText("—"); self.s_dur._val.setText("image")
+                self.s_fps._val.setText("—"); self.s_dur._val.setText(_tr("media.image", "image"))
                 self.s_frm._val.setText("1"); self.info_w.setVisible(True)
                 self._video_info = None
             except Exception:
                 self.info_w.setVisible(False); self._video_info = None
-            self.lbl_estimate.setText("→ PNG")
+            self.lbl_estimate.setText(_tr("label.png_output", "→ PNG"))
             self.chk_audio.setEnabled(False); self.chk_audio.setChecked(False)
             self.sl_scrub.setEnabled(False)
             self.btn_start.setEnabled(True); self.btn_preview.setEnabled(True)
+            self.btn_quick_preview.setEnabled(False)
             self.btn_benchmark.setEnabled(False)
             self._update_res_suggestion()
             return
@@ -3548,14 +3975,100 @@ class AlphaCutWindow(QMainWindow):
             self._chroma_detect_worker.result.connect(self._chroma_detected)
             self._chroma_detect_worker.start()
         else: self.info_w.setVisible(False)
-        self.btn_start.setEnabled(True); self.btn_preview.setEnabled(True)
+        self.btn_start.setEnabled(True); self.btn_preview.setEnabled(True); self.btn_quick_preview.setEnabled(True)
         self.btn_benchmark.setEnabled(True); self.sl_scrub.setEnabled(True)
         self._update_res_suggestion()
 
+    def _short_model_name(self, model_key):
+        return model_key.split('(')[0].strip()
+
+    def _format_label(self, fmt):
+        for i in range(self.combo_fmt.count()):
+            if self.combo_fmt.itemData(i) == fmt:
+                return self.combo_fmt.itemText(i).split('(')[0].strip()
+        return fmt
+
+    def _batch_settings_text(self, row):
+        if row < 0 or row >= len(self._batch_jobs):
+            return ""
+        settings = self._batch_job_settings.get(row, {})
+        model_key = settings.get('model_key') or list(MODELS.keys())[self.combo_model.currentIndex()]
+        path = self._batch_jobs[row]
+        ext = os.path.splitext(path)[1].lower()
+        if ext in IMAGE_EXTENSIONS:
+            fmt_label = "PNG"
+        else:
+            fmt_label = self._format_label(settings.get('format') or self._current_format())
+        return f"{self._short_model_name(model_key)} / {fmt_label}"
+
+    def _refresh_batch_settings_display(self, *args):
+        if not hasattr(self, 'job_table'):
+            return
+        for row in range(min(self.job_table.rowCount(), len(self._batch_jobs))):
+            self.job_table.update_settings(row, self._batch_settings_text(row))
+
+    def _job_context_menu(self, pos):
+        row = self.job_table.rowAt(pos.y())
+        if row < 0 or row >= len(self._batch_jobs):
+            return
+        menu = QMenu(self)
+        edit_action = menu.addAction(_tr("menu.edit_job_settings", "Edit Job Settings..."))
+        reset_action = menu.addAction(_tr("menu.use_global_settings", "Use Global Settings"))
+        action = menu.exec(self.job_table.viewport().mapToGlobal(pos))
+        if action == edit_action:
+            self._edit_batch_job_settings(row)
+        elif action == reset_action:
+            self._batch_job_settings.pop(row, None)
+            self.job_table.update_settings(row, self._batch_settings_text(row))
+            self._toast_msg(_tr("toast.job_settings_reset", "Job settings reset"))
+
+    def _edit_batch_job_settings(self, row):
+        if row < 0 or row >= len(self._batch_jobs):
+            return
+        path = self._batch_jobs[row]
+        is_image = os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
+        current = self._batch_job_settings.get(row, {})
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_tr("dialog.job_settings.title", "Job Settings"))
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(os.path.basename(path)))
+        lay.addWidget(QLabel(_tr("label.ai_model", "AI Model")))
+        model_combo = QComboBox()
+        for name in MODELS:
+            model_combo.addItem(name, name)
+        model_value = current.get('model_key') or list(MODELS.keys())[self.combo_model.currentIndex()]
+        model_combo.setCurrentIndex(max(0, model_combo.findData(model_value)))
+        lay.addWidget(model_combo)
+        lay.addWidget(QLabel(_tr("label.output_format", "Output Format")))
+        fmt_combo = QComboBox()
+        for i in range(self.combo_fmt.count()):
+            fmt_combo.addItem(self.combo_fmt.itemText(i), self.combo_fmt.itemData(i))
+        fmt_value = current.get('format') or self._current_format()
+        fmt_combo.setCurrentIndex(max(0, fmt_combo.findData(fmt_value)))
+        fmt_combo.setEnabled(not is_image)
+        if is_image:
+            fmt_combo.setToolTip(_tr("tip.image_batch_png", "Image batch jobs export transparent PNG files."))
+        lay.addWidget(fmt_combo)
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(dlg.accept); btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._batch_job_settings[row] = {
+                'model_key': model_combo.currentData(),
+                'format': fmt_combo.currentData(),
+            }
+            self.job_table.update_settings(row, self._batch_settings_text(row))
+            self._toast_msg(_tr("toast.job_settings_updated", "Job settings updated"))
+
     def _load_batch(self, paths):
-        self._batch_jobs = [p for p in paths if os.path.isfile(p)]
+        self._batch_jobs = [
+            p for p in paths
+            if os.path.isfile(p) and os.path.splitext(p)[1].lower() in (VIDEO_EXTENSIONS | IMAGE_EXTENSIONS)
+        ]
         if not self._batch_jobs: return
+        self._batch_job_settings = {}
         self._input_path = self._batch_jobs[0]
+        self._is_image = os.path.splitext(self._input_path)[1].lower() in IMAGE_EXTENSIONS
         self.preview.clear_mask_edits()
         # Batch-update recent files in a single read-modify-write
         s = load_settings()
@@ -3568,13 +4081,17 @@ class AlphaCutWindow(QMainWindow):
         self.grp_batch.setVisible(True); self.job_table.clear_all()
         self.thumb_grid.set_files(self._batch_jobs)
         for i, p in enumerate(self._batch_jobs):
-            self.job_table.add_job(os.path.basename(p))
-        self.drop_zone.setText(f"{len(self._batch_jobs)} videos queued")
-        self._log(f"\nBatch loaded: {len(self._batch_jobs)} videos")
-        self.lbl_status.setText(f"Batch: {len(self._batch_jobs)} videos")
+            self.job_table.add_job(os.path.basename(p), self._batch_settings_text(i))
+        video_count = sum(1 for p in self._batch_jobs if os.path.splitext(p)[1].lower() in VIDEO_EXTENSIONS)
+        image_count = len(self._batch_jobs) - video_count
+        batch_label = f"{len(self._batch_jobs)} files queued ({video_count} video, {image_count} image)"
+        self.drop_zone.setText(batch_label)
+        self._log(f"\nBatch loaded: {batch_label}")
+        self.lbl_status.setText(f"Batch: {batch_label}")
         self.info_w.setVisible(False)
         self.btn_start.setEnabled(True); self.btn_start.setText(f"Start Batch ({len(self._batch_jobs)})")
-        self.btn_preview.setEnabled(True); self.btn_benchmark.setEnabled(True); self.sl_scrub.setEnabled(True)
+        self.btn_preview.setEnabled(True); self.btn_quick_preview.setEnabled(video_count > 0)
+        self.btn_benchmark.setEnabled(video_count > 0); self.sl_scrub.setEnabled(video_count > 0)
         # Start thumbnail loader
         if self._thumbnail_loader:
             self._thumbnail_loader.cancel()
@@ -3587,9 +4104,19 @@ class AlphaCutWindow(QMainWindow):
 
     def _update_estimate(self):
         if not self._video_info: return
-        fmt = OUTPUT_FORMATS[list(OUTPUT_FORMATS.keys())[self.combo_fmt.currentIndex()]]
+        fmt = self._current_format()
         est = estimate_output_size(self._video_info, fmt)
         self.lbl_estimate.setText(f"~{est/1024:.1f} GB" if est > 1024 else f"~{est:.0f} MB" if est > 0 else "")
+
+    def _current_format(self):
+        return self.combo_fmt.currentData() or 'mp4'
+
+    def _format_changed(self, index):
+        self._update_estimate()
+        self._refresh_batch_settings_display()
+
+    def _preview_view_changed(self, index):
+        self.preview.set_view_mode(self.combo_preview_view.currentData() or 'compare')
 
     def _preview_tool_changed(self, index):
         mode = self.combo_mask_tool.currentData() or 'compare'
@@ -3617,11 +4144,12 @@ class AlphaCutWindow(QMainWindow):
 
     # ── Preview ──
     def _preview_frame(self):
-        if not self._input_path or not find_ffmpeg(): return
+        if not self._input_path: return
+        if os.path.splitext(self._input_path)[1].lower() in VIDEO_EXTENSIONS and not find_ffmpeg(): return
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
         comp = self._get_compositing_params()
         roi, mask_edits = self._mask_controls()
-        self.btn_preview.setEnabled(False); self.btn_preview.setText("Previewing...")
+        self.btn_preview.setEnabled(False); self.btn_preview.setText(_tr("status.previewing", "Previewing..."))
         self._preview_worker = PreviewFrameWorker(
             self._input_path, model_key, self.spin_res.value(),
             edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
@@ -3629,21 +4157,71 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            roi=roi, mask_edits=mask_edits, fp16=self.chk_fp16.isChecked())
+            roi=roi, mask_edits=mask_edits, gpu_device=self.spin_gpu.value(),
+            fp16=self.chk_fp16.isChecked())
         self._preview_worker.status.connect(lambda s: self.lbl_status.setText(s))
         self._preview_worker.result.connect(self._preview_done)
         self._preview_worker.error.connect(self._preview_err)
         self._preview_worker.start()
 
-    def _preview_done(self, orig, proc):
-        self.preview.set_images(orig, proc)
-        self.btn_preview.setEnabled(True); self.btn_preview.setText("Preview")
-        self.lbl_status.setText("Preview ready — drag divider to compare")
-        self._toast_msg("Preview ready — drag to compare")
+    def _preview_done(self, orig, proc, mask_bw, mask_gray, mask_overlay):
+        self.preview.set_images(orig, proc, mask_bw, mask_gray, mask_overlay)
+        self.btn_preview.setEnabled(True); self.btn_preview.setText(_tr("btn.preview", "Preview (Ctrl+P)"))
+        self.lbl_status.setText(_tr("status.preview_ready", "Preview ready — drag divider to compare"))
+        self._toast_msg(_tr("toast.preview_ready", "Preview ready — drag to compare"))
 
     def _preview_err(self, msg):
-        self.btn_preview.setEnabled(True); self.btn_preview.setText("Preview")
+        self.btn_preview.setEnabled(True); self.btn_preview.setText(_tr("btn.preview", "Preview (Ctrl+P)"))
         self._log(f"Preview error: {msg}"); self._toast_msg("Preview failed")
+
+    def _preview_clip(self):
+        preview_path = self._input_path
+        if self._batch_jobs:
+            preview_path = next((p for p in self._batch_jobs if os.path.splitext(p)[1].lower() in VIDEO_EXTENSIONS), self._input_path)
+        if not preview_path or os.path.splitext(preview_path)[1].lower() not in VIDEO_EXTENSIONS:
+            return
+        if not find_ffmpeg():
+            self._toast_msg("FFmpeg required for preview clip")
+            return
+        model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
+        fmt = self._current_format()
+        preview_fmt = 'mp4' if fmt in ('png_seq', 'fg_alpha') else fmt
+        comp = self._get_compositing_params()
+        roi, mask_edits = self._mask_controls()
+        preview_dir = tempfile.mkdtemp(prefix='alphacut_preview_clip_')
+        out = os.path.join(preview_dir, f"preview{format_extension(preview_fmt)}")
+        self.btn_quick_preview.setEnabled(False); self.btn_quick_preview.setText(_tr("status.rendering", "Rendering..."))
+        self.progress_bar.setValue(0); self.lbl_status.setText(_tr("status.rendering_preview", "Rendering 10s preview..."))
+        self._quick_preview_worker = QuickPreviewWorker(
+            preview_path, out, model_key, preview_fmt, self.spin_res.value(),
+            edge_softness=self.sl_edge.value(), mask_shift=self.sl_shift.value(),
+            temporal_smooth=self.sl_temporal.value(), keep_audio=False,
+            frame_skip=self.sl_frame_skip.value(), invert_mask=comp['invert_mask'],
+            spill_strength=comp['spill_strength'], spill_color=comp['spill_color'],
+            shadow_strength=comp['shadow_strength'], bg_color=comp['bg_color'],
+            bg_image_path=comp['bg_image_path'], quality=self.sl_quality.value(),
+            roi=roi, mask_edits=mask_edits, gpu_device=self.spin_gpu.value(),
+            fp16=self.chk_fp16.isChecked(), duration=10)
+        self._quick_preview_worker.progress.connect(self.progress_bar.setValue)
+        self._quick_preview_worker.status.connect(self.lbl_status.setText)
+        self._quick_preview_worker.log.connect(self._log)
+        self._quick_preview_worker.preview.connect(self.preview.set_frame)
+        self._quick_preview_worker.finished.connect(self._preview_clip_done)
+        self._quick_preview_worker.error.connect(self._preview_clip_err)
+        self._quick_preview_worker.start()
+
+    def _preview_clip_done(self, path):
+        self.btn_quick_preview.setEnabled(True); self.btn_quick_preview.setText(_tr("btn.preview_10s", "Preview 10s"))
+        self.progress_bar.setValue(100)
+        self.lbl_status.setText(_trf("status.preview_clip_ready", "Preview clip ready: {file}", file=os.path.basename(path)))
+        self._toast_msg(_tr("toast.preview_clip_ready", "Preview clip ready"), 5000)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _preview_clip_err(self, msg):
+        self.btn_quick_preview.setEnabled(True); self.btn_quick_preview.setText(_tr("btn.preview_10s", "Preview 10s"))
+        self._log(f"Preview clip error: {msg}")
+        self.lbl_status.setText(_tr("status.preview_clip_failed", "Preview clip failed"))
+        self._toast_msg(_tr("toast.preview_clip_failed", "Preview clip failed"))
 
     def _chroma_detected(self, result):
         """Handle chroma-key detection result."""
@@ -3661,10 +4239,14 @@ class AlphaCutWindow(QMainWindow):
     # ── Processing ──
     def _start(self):
         if not self._input_path: return
-        if not self._is_image and not find_ffmpeg(): return
+        needs_ffmpeg = (
+            (self._batch_jobs and any(os.path.splitext(p)[1].lower() in VIDEO_EXTENSIONS for p in self._batch_jobs))
+            or (not self._batch_jobs and not self._is_image)
+        )
+        if needs_ffmpeg and not find_ffmpeg(): return
         self._save_settings()
         model_key = list(MODELS.keys())[self.combo_model.currentIndex()]
-        fmt = OUTPUT_FORMATS[list(OUTPUT_FORMATS.keys())[self.combo_fmt.currentIndex()]]
+        fmt = self._current_format()
         pattern = self.combo_naming.currentText()
 
         if _model_needs_download(model_key):
@@ -3704,23 +4286,21 @@ class AlphaCutWindow(QMainWindow):
         worker.start()
 
     def _dispatch_start(self, model_key, fmt, pattern):
-        if self._is_image:
-            self._start_image(model_key)
-            return
         if self._batch_jobs:
             self._start_batch(model_key, fmt, pattern)
+        elif self._is_image:
+            self._start_image(model_key)
         else:
             self._start_single(model_key, fmt, pattern)
 
     def _start_single(self, model_key, fmt, pattern):
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4', 'matte': '.mov', 'mp4': '.mp4', 'webp_anim': '.webp', 'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4'}
         if fmt == 'png_seq':
-            out = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+            out = QFileDialog.getExistingDirectory(self, _tr("dialog.select_output_folder", "Select Output Folder"))
             if not out: return
         else:
             default = generate_output_name(self._input_path, pattern, model_key, fmt)
-            ext = ext_map.get(fmt, '.mov')
-            out, _ = QFileDialog.getSaveFileName(self, "Save Output", default, f"*{ext};;All (*)")
+            ext = format_extension(fmt)
+            out, _ = QFileDialog.getSaveFileName(self, _tr("dialog.save_output", "Save Output"), default, f"*{ext};;All (*)")
             if not out: return
         # Disk space check
         if self._video_info:
@@ -3765,7 +4345,7 @@ class AlphaCutWindow(QMainWindow):
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
             quality=self.sl_quality.value(), roi=roi, mask_edits=mask_edits,
-            fp16=self.chk_fp16.isChecked())
+            gpu_device=self.spin_gpu.value(), fp16=self.chk_fp16.isChecked())
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.progress.connect(self._update_tray_progress)
         self._worker.frame_info.connect(lambda c, t: self.lbl_frame.setText(f"Frame {c} / {t}"))
@@ -3780,7 +4360,7 @@ class AlphaCutWindow(QMainWindow):
     def _start_image(self, model_key):
         base = os.path.splitext(os.path.basename(self._input_path))[0]
         default = os.path.join(os.path.dirname(self._input_path), f"{base}_alphacut.png")
-        out, _ = QFileDialog.getSaveFileName(self, "Save Output", default, "PNG (*.png);;All (*)")
+        out, _ = QFileDialog.getSaveFileName(self, _tr("dialog.save_output", "Save Output"), default, "PNG (*.png);;All (*)")
         if not out: return
         self._begin_processing()
         comp = self._get_compositing_params()
@@ -3791,7 +4371,8 @@ class AlphaCutWindow(QMainWindow):
             invert_mask=comp['invert_mask'], spill_strength=comp['spill_strength'],
             spill_color=comp['spill_color'], shadow_strength=comp['shadow_strength'],
             bg_color=comp['bg_color'], bg_image_path=comp['bg_image_path'],
-            roi=roi, mask_edits=mask_edits, fp16=self.chk_fp16.isChecked())
+            roi=roi, mask_edits=mask_edits, gpu_device=self.spin_gpu.value(),
+            fp16=self.chk_fp16.isChecked())
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.progress.connect(self._update_tray_progress)
         self._worker.status.connect(self.lbl_status.setText)
@@ -3802,21 +4383,26 @@ class AlphaCutWindow(QMainWindow):
         self._worker.start()
 
     def _start_batch(self, model_key, fmt, pattern):
-        out_dir = QFileDialog.getExistingDirectory(self, "Select Output Folder")
+        out_dir = QFileDialog.getExistingDirectory(self, _tr("dialog.select_output_folder", "Select Output Folder"))
         if not out_dir: return
         comp = self._get_compositing_params()
         roi, mask_edits = self._mask_controls()
         jobs = []
-        for path in self._batch_jobs:
-            out_name = generate_output_name(path, pattern, model_key, fmt)
+        for row, path in enumerate(self._batch_jobs):
+            overrides = self._batch_job_settings.get(row, {})
+            job_model = overrides.get('model_key') or model_key
+            is_image = os.path.splitext(path)[1].lower() in IMAGE_EXTENSIONS
+            job_fmt = 'png' if is_image else (overrides.get('format') or fmt)
+            out_name = generate_output_name(path, pattern, job_model, job_fmt)
             out_path = os.path.join(out_dir, os.path.basename(out_name))
-            jobs.append({'input': path, 'output': out_path, 'model_key': model_key, 'format': fmt,
+            jobs.append({'input': path, 'output': out_path, 'model_key': job_model, 'format': job_fmt,
+                         'type': 'image' if is_image else 'video',
                          'max_res': self.spin_res.value(), 'edge': self.sl_edge.value(),
                          'shift': self.sl_shift.value(), 'temporal': self.sl_temporal.value(),
                          'audio': self.chk_audio.isChecked(), 'frame_skip': self.sl_frame_skip.value(),
                          'quality': self.sl_quality.value(),
                          'roi': roi, 'mask_edits': mask_edits,
-                         'fp16': self.chk_fp16.isChecked(),
+                         'gpu_device': self.spin_gpu.value(), 'fp16': self.chk_fp16.isChecked(),
                          **comp})
         self._begin_processing()
         self._batch_start_time = time.time()
@@ -3835,25 +4421,25 @@ class AlphaCutWindow(QMainWindow):
         self._batch_worker.start()
 
     def _begin_processing(self):
-        self.btn_start.setEnabled(False); self.btn_preview.setEnabled(False)
+        self.btn_start.setEnabled(False); self.btn_preview.setEnabled(False); self.btn_quick_preview.setEnabled(False)
         self.btn_benchmark.setEnabled(False); self.btn_cancel.setVisible(True)
         self.progress_bar.setValue(0); self._start_glow()
-        self.lbl_status.setText("Starting..."); self.lbl_frame.setText("")
+        self.lbl_status.setText(_tr("status.starting", "Starting...")); self.lbl_frame.setText("")
         self.btn_copy_path.setVisible(False); self.btn_open_folder.setVisible(False); self.btn_drag_out.setVisible(False)
-        if self._tray: self._tray.show(); self._tray.setToolTip(f"{APP_NAME} — Processing...")
+        if self._tray: self._tray.show(); self._tray.setToolTip(_trf("tray.processing", "{app} — Processing...", app=APP_NAME))
 
     def _cancel(self):
-        for w in [self._worker, self._batch_worker, self._chroma_detect_worker, self._thumbnail_loader, self._model_dl_worker]:
+        for w in [self._worker, self._batch_worker, self._preview_worker, self._quick_preview_worker, self._chroma_detect_worker, self._thumbnail_loader, self._model_dl_worker]:
             if w and w.isRunning(): w.cancel(); w.quit(); w.wait(5000)
-        self._reset(); self.lbl_status.setText("Cancelled"); self._toast_msg("Cancelled")
+        self._reset(); self.lbl_status.setText(_tr("status.cancelled", "Cancelled")); self._toast_msg(_tr("toast.cancelled", "Cancelled"))
 
     def _done(self, path):
         self._reset(); self._last_output = path
-        self.lbl_status.setText(f"Done: {os.path.basename(path)}")
-        self._log(f"\nOutput: {path}"); self._toast_msg(f"Done: {os.path.basename(path)}", 5000)
+        self.lbl_status.setText(_trf("status.done_file", "Done: {file}", file=os.path.basename(path)))
+        self._log(_trf("log.output", "\nOutput: {path}", path=path)); self._toast_msg(_trf("toast.done_file", "Done: {file}", file=os.path.basename(path)), 5000)
         self.btn_copy_path.setVisible(True); self.btn_open_folder.setVisible(True); self.btn_drag_out.setVisible(True); self.btn_drag_out.set_file(self._last_output)
         if self._tray and self._tray.isVisible():
-            self._tray.showMessage(APP_NAME, f"Done: {os.path.basename(path)}", QSystemTrayIcon.MessageIcon.Information, 5000)
+            self._tray.showMessage(APP_NAME, _trf("toast.done_file", "Done: {file}", file=os.path.basename(path)), QSystemTrayIcon.MessageIcon.Information, 5000)
 
     def _batch_status_with_eta(self, idx, status_text):
         elapsed = time.time() - self._batch_start_time
@@ -3868,21 +4454,24 @@ class AlphaCutWindow(QMainWindow):
     def _batch_done(self, completed, total):
         self._reset()
         self.lbl_status.setText(f"Batch complete: {completed}/{total}")
-        self._toast_msg(f"Batch done: {completed}/{total} videos", 5000)
-        self.btn_start.setText("Start Processing")
+        self._toast_msg(_trf("toast.batch_done", "Batch done: {completed}/{total} files", completed=completed, total=total), 5000)
+        self.btn_start.setText(_tr("btn.start", "Start Processing (Ctrl+Enter)"))
         if self._tray and self._tray.isVisible():
-            self._tray.showMessage(APP_NAME, f"Batch complete: {completed}/{total}", QSystemTrayIcon.MessageIcon.Information, 5000)
+            self._tray.showMessage(APP_NAME, _trf("toast.batch_complete", "Batch complete: {completed}/{total}", completed=completed, total=total), QSystemTrayIcon.MessageIcon.Information, 5000)
 
     def _err(self, msg):
-        self._reset(); self.lbl_status.setText("Error")
+        self._reset(); self.lbl_status.setText(_tr("status.error", "Error"))
         self._log(f"\nERROR:\n{msg}"); self._toast_msg("Failed — see log", 5000)
 
     def _reset(self):
+        has_video = bool(self._batch_jobs and any(os.path.splitext(p)[1].lower() in VIDEO_EXTENSIONS for p in self._batch_jobs))
         self.btn_start.setEnabled(True); self.btn_preview.setEnabled(True)
-        self.btn_benchmark.setEnabled(True); self.btn_cancel.setVisible(False); self._stop_glow()
+        self.btn_quick_preview.setEnabled((not self._batch_jobs and not self._is_image) or has_video)
+        self.btn_benchmark.setEnabled((not self._batch_jobs and not self._is_image) or has_video)
+        self.btn_cancel.setVisible(False); self._stop_glow()
         if self._tray: self._tray.hide()
-        if self._batch_jobs: self.btn_start.setText(f"Start Batch ({len(self._batch_jobs)})")
-        else: self.btn_start.setText("Start Processing")
+        if self._batch_jobs: self.btn_start.setText(_trf("btn.start_batch", "Start Batch ({count})", count=len(self._batch_jobs)))
+        else: self.btn_start.setText(_tr("btn.start", "Start Processing (Ctrl+Enter)"))
 
     def _copy_path(self):
         if self._last_output:
@@ -3896,7 +4485,7 @@ class AlphaCutWindow(QMainWindow):
         self._save_settings(); self._stop_glow()
         if self._tray: self._tray.hide()
         # Cancel all workers first, then wait (parallel cancel, sequential wait)
-        workers = [self._worker, self._batch_worker, self._preview_worker, self._benchmark_worker, self._model_dl_worker]
+        workers = [self._worker, self._batch_worker, self._preview_worker, self._quick_preview_worker, self._benchmark_worker, self._model_dl_worker]
         for w in workers:
             if w and w.isRunning() and hasattr(w, 'cancel'): w.cancel()
         for w in workers:
@@ -3978,9 +4567,9 @@ def run_cli(args):
         if args.model.lower() in name.lower():
             model_key = name; break
     fmt = args.format
-    if fmt not in OUTPUT_FORMATS.values():
+    if fmt not in ALL_OUTPUT_FORMAT_VALUES:
         if use_json: _json_line({"type": "error", "message": f"Unknown format: {fmt}"})
-        else: print(f"Unknown format: {fmt}. Options: {', '.join(OUTPUT_FORMATS.values())}")
+        else: print(f"Unknown format: {fmt}. Options: {', '.join(ALL_OUTPUT_FORMAT_VALUES)}")
         sys.exit(1)
 
     # Parse bg_color once
@@ -4206,7 +4795,7 @@ def main():
     parser.add_argument('--input', '-i', nargs='+', help='Input video file(s)')
     parser.add_argument('--output', '-o', help='Output file path (single file mode)')
     parser.add_argument('--model', '-m', default='u2net_human_seg', help='Model name (partial match)')
-    parser.add_argument('--format', '-f', default='mp4', choices=list(OUTPUT_FORMATS.values()), help='Output format')
+    parser.add_argument('--format', '-f', default='mp4', choices=list(ALL_OUTPUT_FORMAT_VALUES), help='Output format')
     parser.add_argument('--quality', '-q', type=int, default=70, help='Output quality 0-100 (0=smallest, 100=best)')
     parser.add_argument('--max-res', type=int, default=0, help='Max resolution (0=original)')
     parser.add_argument('--edge', type=int, default=0, help='Edge softness (0-100)')

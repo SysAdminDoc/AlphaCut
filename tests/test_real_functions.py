@@ -20,6 +20,24 @@ import textwrap
 # ---------------------------------------------------------------------------
 _SRC_PATH = os.path.join(os.path.dirname(__file__), '..', 'AlphaCut.py')
 
+_OUTPUT_EXTENSIONS = {
+    'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'greenscreen': '.mp4',
+    'matte': '.mov', 'mp4': '.mp4', 'hevc': '.mp4', 'webp_anim': '.webp',
+    'gif_anim': '.gif', 'fg_alpha': '.mp4', 'av1': '.mp4', 'png': '.png',
+    'mp4_nvenc': '.mp4', 'hevc_nvenc': '.mp4', 'mp4_qsv': '.mp4', 'hevc_qsv': '.mp4',
+}
+
+def _format_extension(fmt):
+    return _OUTPUT_EXTENSIONS.get(fmt, '.mov')
+
+def _normalize_encoder_format(fmt):
+    return {
+        'mp4_nvenc': 'mp4',
+        'mp4_qsv': 'mp4',
+        'hevc_nvenc': 'hevc',
+        'hevc_qsv': 'hevc',
+    }.get(fmt, fmt)
+
 def _read_source():
     with open(_SRC_PATH, encoding='utf-8') as f:
         return f.read()
@@ -118,7 +136,8 @@ class TestComputeSha256:
 # ---------------------------------------------------------------------------
 class TestGenerateOutputName:
     def setup_method(self):
-        self._generate = _extract_function('generate_output_name')
+        self._generate = _extract_function('generate_output_name',
+                                           extra_imports={'format_extension': _format_extension})
 
     def test_name_token(self):
         result = self._generate("/tmp/test.mp4", "{name}_alphacut", "u2net_human_seg (People)", "mp4")
@@ -150,7 +169,8 @@ class TestGenerateOutputName:
 # ---------------------------------------------------------------------------
 class TestEstimateOutputSize:
     def setup_method(self):
-        self._estimate = _extract_function('estimate_output_size')
+        self._estimate = _extract_function('estimate_output_size',
+                                           extra_imports={'normalize_encoder_format': _normalize_encoder_format})
 
     def test_none_info(self):
         assert self._estimate(None, 'mp4') == 0
@@ -169,8 +189,16 @@ class TestEstimateOutputSize:
 
     def test_positive_for_all_formats(self):
         info = {'width': 1920, 'height': 1080, 'total_frames': 300}
-        for fmt in ['mp4', 'hevc', 'av1', 'webm', 'prores', 'png_seq', 'greenscreen', 'matte', 'webp_anim', 'gif_anim']:
+        for fmt in ['mp4', 'hevc', 'av1', 'webm', 'prores', 'png_seq', 'greenscreen', 'matte',
+                    'webp_anim', 'gif_anim', 'mp4_nvenc', 'hevc_nvenc', 'mp4_qsv', 'hevc_qsv']:
             assert self._estimate(info, fmt) > 0, f"{fmt} should give positive estimate"
+
+    def test_hardware_encoder_estimates_match_codec_family(self):
+        info = {'width': 1920, 'height': 1080, 'total_frames': 300}
+        assert self._estimate(info, 'mp4_nvenc') == self._estimate(info, 'mp4')
+        assert self._estimate(info, 'mp4_qsv') == self._estimate(info, 'mp4')
+        assert self._estimate(info, 'hevc_nvenc') == self._estimate(info, 'hevc')
+        assert self._estimate(info, 'hevc_qsv') == self._estimate(info, 'hevc')
 
 
 # ---------------------------------------------------------------------------
@@ -249,5 +277,14 @@ class TestOutputFormats:
                         values = list(formats.values())
                         assert len(values) == len(set(values)), f"Duplicate format values: {values}"
                         assert 'hevc' in values
+                        for fmt in ['mp4_nvenc', 'hevc_nvenc', 'mp4_qsv', 'hevc_qsv']:
+                            assert fmt in source
                         return
         assert False, "OUTPUT_FORMATS not found in source"
+
+    def test_cli_runtime_accepts_hardware_encoder_formats(self):
+        """run_cli should validate against CPU plus hardware format ids."""
+        source = _read_source()
+        run_cli = source.split('def run_cli(args):', 1)[1].split('\ndef main()', 1)[0]
+        assert 'fmt not in ALL_OUTPUT_FORMAT_VALUES' in run_cli
+        assert 'fmt not in OUTPUT_FORMATS.values()' not in run_cli

@@ -98,7 +98,8 @@ def test_compute_sha256():
 def test_output_format_keys_unique():
     """OUTPUT_FORMATS values should all be unique."""
     formats = ['mp4', 'hevc', 'av1', 'webm', 'webp_anim', 'gif_anim', 'greenscreen',
-               'prores', 'matte', 'fg_alpha', 'png_seq']
+               'prores', 'matte', 'fg_alpha', 'png_seq',
+               'mp4_nvenc', 'hevc_nvenc', 'mp4_qsv', 'hevc_qsv']
     assert len(formats) == len(set(formats))
 
 
@@ -110,7 +111,9 @@ def test_generate_output_name_patterns():
         model_short = model_key.split('(')[0].strip().replace(' ', '_').lower()
         name = pattern.replace('{name}', base).replace('{model}', model_short)
         name = name.replace('{format}', fmt)
-        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'mp4': '.mp4', 'av1': '.mp4'}
+        ext_map = {'prores': '.mov', 'webm': '.webm', 'png_seq': '', 'mp4': '.mp4',
+                   'hevc': '.mp4', 'av1': '.mp4', 'mp4_nvenc': '.mp4',
+                   'hevc_nvenc': '.mp4', 'mp4_qsv': '.mp4', 'hevc_qsv': '.mp4'}
         ext = ext_map.get(fmt, '.mov')
         return os.path.basename(f"{name}{ext}")
 
@@ -137,6 +140,8 @@ def test_estimate_output_size():
     assert estimate(None, 'mp4') == 0
     av1 = estimate(info, 'av1')
     assert av1 < mp4  # AV1 should be smaller than H.264
+    assert estimate(info, 'mp4_nvenc') > 0
+    assert estimate(info, 'hevc_nvenc') > 0
 
 
 def test_image_extensions():

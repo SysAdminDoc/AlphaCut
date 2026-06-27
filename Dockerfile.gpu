@@ -1,0 +1,23 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ffmpeg \
+        python3 \
+        python3-pip \
+        python3-venv && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-cli.txt .
+RUN pip3 install --no-cache-dir -r requirements-cli.txt && \
+    pip3 uninstall -y onnxruntime && \
+    pip3 install --no-cache-dir "onnxruntime-gpu>=1.19.0"
+
+COPY AlphaCut.py models.json locale_template.json ./
+
+ENTRYPOINT ["python3", "AlphaCut.py"]
