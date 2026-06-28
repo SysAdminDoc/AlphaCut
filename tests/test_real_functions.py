@@ -8,11 +8,11 @@ import os
 import sys
 import ast
 import json
+import subprocess
 import time
 import types
 import hashlib
 import tempfile
-import textwrap
 
 # ---------------------------------------------------------------------------
 # Helper: extract a function from AlphaCut.py source without triggering
@@ -162,6 +162,64 @@ class TestGenerateOutputName:
     def test_preserves_directory(self):
         result = self._generate("/videos/project/test.mp4", "{name}", "u2net", "mp4")
         assert "/videos/project/" in result.replace("\\", "/") or "\\videos\\project\\" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests for _stable_resume_id (real implementation)
+# ---------------------------------------------------------------------------
+class TestStableResumeId:
+    def setup_method(self):
+        self._stable_resume_id = _extract_function('_stable_resume_id')
+
+    def test_normalized_path_hash_is_hex_and_stable(self, tmp_path):
+        source = tmp_path / 'clip.mp4'
+        source.write_bytes(b'video bytes')
+        first = self._stable_resume_id(str(source))
+        second = self._stable_resume_id(os.path.join(str(tmp_path), '.', 'clip.mp4'))
+
+        assert first == second
+        assert len(first) == 16
+        int(first, 16)
+
+    def test_same_path_matches_across_hash_seeds(self, tmp_path):
+        source = tmp_path / 'clip.mp4'
+        source.write_bytes(b'video bytes')
+        app_source = _read_source()
+        tree = ast.parse(app_source)
+        helper_source = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == '_stable_resume_id':
+                helper_source = ast.get_source_segment(app_source, node)
+                break
+        assert helper_source is not None
+
+        script = "\n".join([
+            "import hashlib",
+            "import os",
+            helper_source,
+            f"print(_stable_resume_id({str(source)!r}))",
+        ])
+
+        results = []
+        for seed in ('1', '987654'):
+            env = os.environ.copy()
+            env['PYTHONHASHSEED'] = seed
+            proc = subprocess.run(
+                [sys.executable, '-c', script],
+                capture_output=True,
+                text=True,
+                check=True,
+                env=env,
+            )
+            results.append(proc.stdout.strip())
+
+        assert results[0] == results[1]
+
+    def test_processing_worker_uses_stable_resume_id(self):
+        source = _read_source()
+        worker_src = source.split('class ProcessingWorker', 1)[1].split('\n\n# ═', 1)[0]
+        assert '_stable_resume_id(self.input_path)' in worker_src
+        assert 'hash(self.input_path)' not in worker_src
 
 
 # ---------------------------------------------------------------------------

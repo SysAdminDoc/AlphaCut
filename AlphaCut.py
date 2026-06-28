@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.1 — AI Video Background Removal
+AlphaCut v1.6.2 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -520,6 +520,13 @@ def generate_output_name(input_path, pattern, model_key, fmt):
     name = name.replace('{format}', fmt).replace('{date}', now[0]).replace('{time}', now[1])
     ext = format_extension(fmt)
     return os.path.join(os.path.dirname(input_path), f"{name}{ext}")
+
+def _stable_resume_id(input_path):
+    """Return a process-stable resume ID for an input path."""
+    normalized = os.path.normcase(
+        os.path.realpath(os.path.abspath(os.path.normpath(str(input_path))))
+    )
+    return hashlib.sha256(normalized.encode('utf-8', 'surrogatepass')).hexdigest()[:16]
 
 def reveal_in_explorer(path):
     """Open the containing folder and select the file."""
@@ -1287,11 +1294,11 @@ class ProcessingWorker(QThread):
         tmp_dir = tempfile.mkdtemp(prefix='alphacut_')
         frames_in = os.path.join(tmp_dir, 'in'); frames_out = os.path.join(tmp_dir, 'out')
         os.makedirs(frames_in); os.makedirs(frames_out)
-        # Resume support: use deterministic output dir based on input hash
+        # Resume support: use deterministic output dir based on input identity
         # so processed frames survive crashes
-        progress_hash = f"{hash(self.input_path) & 0xFFFFFFFF:08x}"
-        progress_file = os.path.join(APP_DIR, f"resume_{progress_hash}.json")
-        persist_out = os.path.join(APP_DIR, f"wip_{progress_hash}")
+        resume_id = _stable_resume_id(self.input_path)
+        progress_file = os.path.join(APP_DIR, f"resume_{resume_id}.json")
+        persist_out = os.path.join(APP_DIR, f"wip_{resume_id}")
         resume_frame = self.resume_from
         try:
             # ── PHASE 1: EXTRACTION (0% → 10%) ──

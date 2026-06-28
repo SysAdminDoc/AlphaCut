@@ -12,13 +12,6 @@ No active roadmap items.
 
 ### P0
 
-- [ ] P0 - Use stable resume IDs across restarts
-  Why: Python's salted `hash()` can change between processes, breaking the advertised crash/restart resume workflow.
-  Evidence: `AlphaCut.py:1292`; README "Resume Interrupted Jobs" claim.
-  Touches: `AlphaCut.py`, `tests/test_real_functions.py`
-  Acceptance: Resume progress/WIP paths are derived from a stable SHA-256 of normalized input identity, and a unit test proves the same path is produced across simulated processes.
-  Complexity: S
-
 - [ ] P0 - Pin and verify model hashes before trusting downloads
   Why: Current first-download sidecars only prove the cached file did not change after download, not that the downloaded model matched a reviewed upstream asset.
   Evidence: `models.json`; `AlphaCut.py:887`; rembg/BiRefNet model release usage.
