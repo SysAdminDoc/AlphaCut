@@ -12,13 +12,6 @@ No active roadmap items.
 
 ### P0
 
-- [ ] P0 - Make CLI failures observable and non-zero
-  Why: CLI and Docker automation can currently finish with a final complete event even when image/video processing emitted an error.
-  Evidence: `AlphaCut.py:4500`, `AlphaCut.py:4640`, `AlphaCut.py:4662`; remove.bg/Unscreen API-style status contracts.
-  Touches: `AlphaCut.py`, `tests/test_cli.py`, `tests/test_real_functions.py`
-  Acceptance: Failed image, FFmpeg, model, and encode paths emit JSON error events when `--json` is set, exit non-zero, and never emit success for missing outputs.
-  Complexity: M
-
 - [ ] P0 - Use stable resume IDs across restarts
   Why: Python's salted `hash()` can change between processes, breaking the advertised crash/restart resume workflow.
   Evidence: `AlphaCut.py:1292`; README "Resume Interrupted Jobs" claim.

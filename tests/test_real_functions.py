@@ -288,3 +288,13 @@ class TestOutputFormats:
         run_cli = source.split('def run_cli(args):', 1)[1].split('\ndef main()', 1)[0]
         assert 'fmt not in ALL_OUTPUT_FORMAT_VALUES' in run_cli
         assert 'fmt not in OUTPUT_FORMATS.values()' not in run_cli
+
+    def test_cli_runtime_reports_failed_terminal_event(self):
+        """run_cli should exit non-zero and avoid complete events after failures."""
+        source = _read_source()
+        run_cli = source.split('def run_cli(args):', 1)[1].split('\ndef main()', 1)[0]
+        assert '"type": "failed"' in run_cli
+        assert '"type": "complete"' in run_cli
+        assert 'sys.exit(1)' in run_cli
+        assert 'worker.error.connect' in run_cli
+        assert 'No output produced.' in run_cli

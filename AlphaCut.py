@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.0 — AI Video Background Removal
+AlphaCut v1.6.1 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -4497,22 +4497,22 @@ class AlphaCutWindow(QMainWindow):
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLI MODE
 # ═══════════════════════════════════════════════════════════════════════════════
-def _cli_process_image(inp, out, model_key, args, bg_color):
+def _cli_process_image(inp, out, model_key, args, bg_color, log_fn=print):
     """Process a single image in CLI mode."""
     if not out.lower().endswith('.png'):
         out = os.path.splitext(out)[0] + '.png'
-    print(f"\nProcessing image: {inp}")
-    print(f"  Model: {model_key}")
-    print(f"  Output: {out}")
+    log_fn(f"\nProcessing image: {inp}")
+    log_fn(f"  Model: {model_key}")
+    log_fn(f"  Output: {out}")
     try:
         img = Image.open(inp); img.load()
         w, h = img.size
-        print(f"  Size: {w}x{h}")
+        log_fn(f"  Size: {w}x{h}")
         if args.max_res > 0 and max(w, h) > args.max_res:
             ratio = args.max_res / max(w, h)
             img = img.resize((int(w * ratio), int(h * ratio)), Image.Resampling.LANCZOS)
-            print(f"  Scaled to {img.size[0]}x{img.size[1]}")
-        engine = get_engine(model_key, log_fn=print, gpu_device=args.gpu_device, fp16=args.fp16)
+            log_fn(f"  Scaled to {img.size[0]}x{img.size[1]}")
+        engine = get_engine(model_key, log_fn=log_fn, gpu_device=args.gpu_device, fp16=args.fp16)
         mask = engine.predict_mask(img)
         if args.edge > 0 or args.shift != 0:
             mask = engine.refine_mask(mask, args.edge, args.shift, 0)
@@ -4532,9 +4532,14 @@ def _cli_process_image(inp, out, model_key, args, bg_color):
         if bg_color is not None or bg_image is not None:
             result = AlphaCutEngine.composite_on_background(result, bg_color=bg_color, bg_image=bg_image)
         result.save(out, 'PNG')
-        print(f"  Done: {out} ({os.path.getsize(out)/(1024*1024):.1f} MB)")
+        if not os.path.isfile(out):
+            return {"ok": False, "output": out, "error": "No output produced."}
+        log_fn(f"  Done: {out} ({os.path.getsize(out)/(1024*1024):.1f} MB)")
+        return {"ok": True, "output": out}
     except Exception as e:
-        print(f"  ERROR: {e}")
+        msg = f"{type(e).__name__}: {e}"
+        log_fn(f"  ERROR: {msg}")
+        return {"ok": False, "output": out, "error": msg}
 
 
 def _json_line(obj):
@@ -4548,6 +4553,8 @@ def run_cli(args):
         cli_app = QCoreApplication.instance() or QCoreApplication(sys.argv)
 
     use_json = getattr(args, 'json', False)
+    completed = 0
+    failed = 0
 
     def _out(msg):
         if use_json: _json_line({"type": "log", "message": msg})
@@ -4561,6 +4568,41 @@ def run_cli(args):
         if use_json: _json_line({"type": "progress", "percent": p})
         elif p % 10 == 0: print(f"  {p}%", end='\r')
 
+    def _error(msg, input_path=None, output_path=None):
+        nonlocal failed
+        failed += 1
+        event = {"type": "error", "message": str(msg)}
+        if input_path is not None:
+            event["input"] = input_path
+        if output_path is not None:
+            event["output"] = output_path
+        if use_json:
+            _json_line(event)
+        else:
+            print(f"ERROR: {msg}")
+
+    def _done(input_path, output_path):
+        nonlocal completed
+        completed += 1
+        if not use_json:
+            return
+        event = {"type": "done", "input": input_path, "output": output_path}
+        if os.path.isfile(output_path):
+            event["size_mb"] = round(os.path.getsize(output_path) / (1024 * 1024), 1)
+        _json_line(event)
+
+    def _finish():
+        if failed:
+            if use_json:
+                _json_line({"type": "failed", "processed": completed, "failed": failed})
+            else:
+                print(f"Failed: {failed} error(s), {completed} completed.")
+            sys.exit(1)
+        if use_json:
+            _json_line({"type": "complete", "processed": completed, "failed": 0})
+        else:
+            print("Done.")
+
     model_names = list(MODELS.keys())
     model_key = model_names[0]
     for i, name in enumerate(model_names):
@@ -4568,23 +4610,24 @@ def run_cli(args):
             model_key = name; break
     fmt = args.format
     if fmt not in ALL_OUTPUT_FORMAT_VALUES:
-        if use_json: _json_line({"type": "error", "message": f"Unknown format: {fmt}"})
-        else: print(f"Unknown format: {fmt}. Options: {', '.join(ALL_OUTPUT_FORMAT_VALUES)}")
-        sys.exit(1)
+        _error(f"Unknown format: {fmt}. Options: {', '.join(ALL_OUTPUT_FORMAT_VALUES)}")
+        _finish()
 
     # Parse bg_color once
     bg_color = None
     if args.bg_color:
         try:
             parts = [int(x.strip()) for x in args.bg_color.split(',')]
-            if len(parts) == 3: bg_color = tuple(parts)
+            if len(parts) != 3 or any(p < 0 or p > 255 for p in parts):
+                raise ValueError("expected three 0-255 channels")
+            bg_color = tuple(parts)
         except ValueError:
-            _out(f"Invalid --bg-color: {args.bg_color} (use R,G,B format)")
+            _error(f"Invalid --bg-color: {args.bg_color} (use R,G,B format)")
+            _finish()
 
     for inp in args.input:
         if not os.path.isfile(inp):
-            if use_json: _json_line({"type": "error", "message": f"File not found: {inp}"})
-            else: print(f"File not found: {inp}")
+            _error(f"File not found: {inp}", input_path=inp)
             continue
 
         # Detect image input
@@ -4592,23 +4635,27 @@ def run_cli(args):
         if ext in IMAGE_EXTENSIONS:
             out = args.output if args.output else os.path.splitext(inp)[0] + '_alphacut.png'
             if os.path.exists(out) and not args.overwrite:
-                _out(f"Output exists: {out} (use -y to overwrite)"); continue
+                _error(f"Output exists: {out} (use -y to overwrite)", input_path=inp, output_path=out)
+                continue
             if use_json: _json_line({"type": "start", "input": inp, "output": out, "model": model_key})
-            _cli_process_image(inp, out, model_key, args, bg_color)
-            if use_json and os.path.isfile(out):
-                _json_line({"type": "done", "input": inp, "output": out, "size_mb": round(os.path.getsize(out)/(1024*1024), 1)})
+            result = _cli_process_image(inp, out, model_key, args, bg_color, log_fn=_out)
+            out = result.get("output", out)
+            if result.get("ok") and os.path.isfile(out):
+                _done(inp, out)
+            else:
+                _error(result.get("error") or "No output produced.", input_path=inp, output_path=out)
             continue
 
         if not find_ffmpeg():
-            if use_json: _json_line({"type": "error", "message": "FFmpeg not found"})
-            else: print("ERROR: FFmpeg not found — required for video processing.")
-            sys.exit(1)
+            _error("FFmpeg not found - required for video processing.", input_path=inp)
+            continue
         if args.output:
             out = args.output
         else:
             out = generate_output_name(inp, "{name}_alphacut", model_key, fmt)
         if os.path.exists(out) and not args.overwrite:
-            _out(f"Output exists: {out} (use -y to overwrite)"); continue
+            _error(f"Output exists: {out} (use -y to overwrite)", input_path=inp, output_path=out)
+            continue
         info = get_video_info(inp)
         if info:
             est_mb = estimate_output_size(info, fmt)
@@ -4645,18 +4692,29 @@ def run_cli(args):
             worker.log.connect(_out)
             worker.status.connect(_status)
             worker.progress.connect(_progress)
+            worker_errors = []
+            finished_paths = []
+            worker.error.connect(lambda msg: worker_errors.append(str(msg)))
+            worker.finished.connect(lambda path: finished_paths.append(path))
             worker.run()
             if not use_json: print()
-            if use_json and os.path.isfile(out):
-                _json_line({"type": "done", "input": inp, "output": out, "size_mb": round(os.path.getsize(out)/(1024*1024), 1)})
+            finished_out = finished_paths[-1] if finished_paths else None
+            if worker_errors:
+                _error(worker_errors[-1], input_path=inp, output_path=out)
+            elif finished_out and (os.path.isfile(finished_out) or os.path.isdir(finished_out)):
+                _done(inp, finished_out)
+            else:
+                _error("No output produced.", input_path=inp, output_path=out)
             continue
 
-        engine = get_engine(model_key, log_fn=_out, gpu_device=args.gpu_device, fp16=args.fp16)
-        engine.reset_temporal()
-        info = get_video_info(inp)
         if not info:
-            if use_json: _json_line({"type": "error", "message": f"Cannot read video: {inp}"})
-            else: print(f"  ERROR: Cannot read video")
+            _error(f"Cannot read video: {inp}", input_path=inp, output_path=out)
+            continue
+        try:
+            engine = get_engine(model_key, log_fn=_out, gpu_device=args.gpu_device, fp16=args.fp16)
+            engine.reset_temporal()
+        except Exception as e:
+            _error(f"{type(e).__name__}: {e}", input_path=inp, output_path=out)
             continue
 
         # Use processing worker synchronously
@@ -4672,13 +4730,21 @@ def run_cli(args):
         worker.log.connect(_out)
         worker.status.connect(_status)
         worker.progress.connect(_progress)
+        worker_errors = []
+        finished_paths = []
+        worker.error.connect(lambda msg: worker_errors.append(str(msg)))
+        worker.finished.connect(lambda path: finished_paths.append(path))
         worker.run()
         if not use_json: print()
-        if use_json and os.path.isfile(out):
-            _json_line({"type": "done", "input": inp, "output": out, "size_mb": round(os.path.getsize(out)/(1024*1024), 1)})
+        finished_out = finished_paths[-1] if finished_paths else None
+        if worker_errors:
+            _error(worker_errors[-1], input_path=inp, output_path=out)
+        elif finished_out and (os.path.isfile(finished_out) or os.path.isdir(finished_out)):
+            _done(inp, finished_out)
+        else:
+            _error("No output produced.", input_path=inp, output_path=out)
 
-    if use_json: _json_line({"type": "complete"})
-    else: print("Done.")
+    _finish()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
