@@ -12,13 +12,6 @@ No active roadmap items.
 
 ### P0
 
-- [ ] P0 - Pin and verify model hashes before trusting downloads
-  Why: Current first-download sidecars only prove the cached file did not change after download, not that the downloaded model matched a reviewed upstream asset.
-  Evidence: `models.json`; `AlphaCut.py:887`; rembg/BiRefNet model release usage.
-  Touches: `models.json`, `AlphaCut.py`, `tests/test_utils.py`, `tests/test_real_functions.py`
-  Acceptance: Every registry model has an expected SHA-256, downloads fail closed on mismatch, hash-missing registry entries are rejected, and the model manager shows verification status.
-  Complexity: M
-
 - [ ] P0 - Drain or suppress FFmpeg stderr in pipe mode
   Why: `run_pipe()` pipes FFmpeg stderr without reading it, which can deadlock long/noisy pipe jobs.
   Evidence: `AlphaCut.py:4750`; FFmpeg pipe workflows in rembg.

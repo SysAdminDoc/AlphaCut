@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.2 — AI Video Background Removal
+AlphaCut v1.6.3 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.2"
+__version__ = "1.6.3"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -232,6 +232,13 @@ def _log_warning(message):
     except OSError:
         return
 
+def _validate_sha256(value, model_name="model"):
+    """Validate and normalize an expected SHA-256 digest."""
+    digest = str(value or '').strip().lower()
+    if len(digest) != 64 or any(ch not in '0123456789abcdef' for ch in digest):
+        raise ValueError(f"Model registry entry {model_name!r} is missing a valid sha256")
+    return digest
+
 def _load_model_registry():
     """Load model registry from models.json, falling back to hardcoded defaults."""
     registry_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
@@ -242,48 +249,59 @@ def _load_model_registry():
         models = {}
         for m in data.get('models', []):
             url = m['url'].replace('{base_url}', base)
+            expected_hash = _validate_sha256(m.get('sha256'), m.get('name') or m.get('file'))
             models[m['label']] = {
                 'file': m['file'], 'url': url,
                 'size': tuple(m['input_size']), 'mean': tuple(m['mean']),
                 'std': tuple(m['std']), 'sigmoid': m.get('sigmoid', False),
+                'sha256': expected_hash,
             }
         if models:
             return models
     except Exception as e:
         if os.path.isfile(registry_path):
             _log_warning(f"Model registry load failed: {e}")
+            raise
     return {
         "u2net_human_seg (People — Recommended)": {
             "file": "u2net_human_seg.onnx", "url": f"{MODEL_BASE}/u2net_human_seg.onnx",
             "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+            "sha256": "01eb6a29a5c4d8edb30b56adad9bb3a2a0535338e480724a213e0acfd2d1c73c",
         },
         "u2net (General Purpose)": {
             "file": "u2net.onnx", "url": f"{MODEL_BASE}/u2net.onnx",
             "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+            "sha256": "8d10d2f3bb75ae3b6d527c77944fc5e7dcd94b29809d47a739a7a728a912b491",
         },
         "u2netp (Lightweight — Fastest)": {
             "file": "u2netp.onnx", "url": f"{MODEL_BASE}/u2netp.onnx",
             "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+            "sha256": "309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8",
         },
         "silueta (People — Lightweight)": {
             "file": "silueta.onnx", "url": f"{MODEL_BASE}/silueta.onnx",
             "size": (320, 320), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": False,
+            "sha256": "75da6c8d2f8096ec743d071951be73b4a8bc7b3e51d9a6625d63644f90ffeedb",
         },
         "isnet-general-use (General — High Quality)": {
             "file": "isnet-general-use.onnx", "url": f"{MODEL_BASE}/isnet-general-use.onnx",
             "size": (1024, 1024), "mean": (0.5, 0.5, 0.5), "std": (1.0, 1.0, 1.0), "sigmoid": False,
+            "sha256": "60920e99c45464f2ba57bee2ad08c919a52bbf852739e96947fbb4358c0d964a",
         },
         "isnet-anime (Anime / Illustration)": {
             "file": "isnet-anime.onnx", "url": f"{MODEL_BASE}/isnet-anime.onnx",
             "size": (1024, 1024), "mean": (0.5, 0.5, 0.5), "std": (1.0, 1.0, 1.0), "sigmoid": False,
+            "sha256": "f15622d853e8260172812b657053460e20806f04b9e05147d49af7bed31a6e99",
         },
         "BiRefNet-general (Best Quality — Slow)": {
             "file": "birefnet-general.onnx", "url": f"{MODEL_BASE}/BiRefNet-general-epoch_244.onnx",
             "size": (1024, 1024), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": True,
+            "sha256": "58f621f00f5d756097615970a88a791584600dcf7c45b18a0a6267535a1ebd3c",
         },
         "BiRefNet-portrait (Portraits — High Quality)": {
             "file": "birefnet-portrait.onnx", "url": f"{MODEL_BASE}/BiRefNet-portrait-epoch_150.onnx",
             "size": (1024, 1024), "mean": (0.485, 0.456, 0.406), "std": (0.229, 0.224, 0.225), "sigmoid": True,
+            "sha256": "1ba1c8ff5a7bbfadc8d8d13fb11d7be793f91f23d9d466549e37a854f6668f99",
         },
     }
 
@@ -890,22 +908,22 @@ class AlphaCutEngine:
             raise ValueError(f"Invalid model filename: {self.config['file']}")
         path = os.path.join(MODELS_DIR, filename)
         sidecar = path + '.sha256'
+        expected = _validate_sha256(self.config.get('sha256'), filename)
 
         if os.path.isfile(path) and os.path.getsize(path) > 1_000_000:
-            if os.path.isfile(sidecar):
-                with open(sidecar, 'r') as f:
-                    stored = f.read().strip()
-                actual = _compute_sha256(path)
-                if actual != stored:
-                    self.log(f"SHA-256 mismatch for {self.config['file']} — re-downloading...")
-                    os.remove(path); os.remove(sidecar)
-                else:
-                    self.log(f"Model verified: {self.config['file']} (sha256: {actual[:12]}…)"); return path
-            else:
-                digest = _compute_sha256(path)
+            actual = _compute_sha256(path)
+            if actual == expected:
                 with open(sidecar, 'w') as f:
-                    f.write(digest)
-                self.log(f"Model cached: {self.config['file']} (sha256: {digest[:12]}…)"); return path
+                    f.write(expected)
+                self.log(f"Model verified: {self.config['file']} (sha256: {actual[:12]}…)"); return path
+            else:
+                self.log(f"SHA-256 mismatch for {self.config['file']} - re-downloading...")
+                try: os.remove(path)
+                except OSError: pass
+                try:
+                    if os.path.isfile(sidecar): os.remove(sidecar)
+                except OSError:
+                    pass
 
         url = self.config['url']
         self.log(f"Downloading: {self.config['file']}...")
@@ -933,8 +951,18 @@ class AlphaCutEngine:
                                 self.log(f"   {downloaded/(1024*1024):.1f}/{total/(1024*1024):.1f} MB ({pct}%)")
             os.replace(tmp_path, path)
             digest = _compute_sha256(path)
+            if digest != expected:
+                try: os.remove(path)
+                except OSError: pass
+                try:
+                    if os.path.isfile(sidecar): os.remove(sidecar)
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    f"SHA-256 mismatch for {self.config['file']}: expected {expected}, got {digest}"
+                )
             with open(sidecar, 'w') as f:
-                f.write(digest)
+                f.write(expected)
             self.log(f"Model ready: {os.path.getsize(path)/(1024*1024):.1f} MB (sha256: {digest[:12]}…)"); return path
         except Exception as e:
             if os.path.exists(path + '.tmp'): os.remove(path + '.tmp')
@@ -3230,14 +3258,23 @@ class ModelManagerDialog(QDialog):
             model_path = os.path.join(MODELS_DIR, os.path.basename(cfg['file']))
             if os.path.isfile(model_path):
                 size_mb = os.path.getsize(model_path) / (1024 * 1024)
-                self.table.setItem(i, 2, QTableWidgetItem(_tr("status.downloaded", "Downloaded")))
+                sidecar = model_path + '.sha256'
+                verified = False
+                if os.path.isfile(sidecar):
+                    try:
+                        with open(sidecar, 'r') as f:
+                            verified = f.read().strip().lower() == cfg.get('sha256', '').lower()
+                    except OSError:
+                        verified = False
+                status = _tr("status.model_verified", "Verified") if verified else _tr("status.needs_verification", "Needs verification")
+                self.table.setItem(i, 2, QTableWidgetItem(status))
                 self.table.setItem(i, 3, QTableWidgetItem(f"{size_mb:.1f} MB"))
                 btn = QPushButton(_tr("btn.delete", "Delete")); btn.setObjectName("danger")
                 btn.setFixedWidth(70)
                 btn.clicked.connect(lambda _, r=i, f=os.path.basename(cfg['file']): self._delete_model(r, f))
                 self.table.setCellWidget(i, 4, btn)
             else:
-                self.table.setItem(i, 2, QTableWidgetItem(_tr("status.not_downloaded", "Not downloaded")))
+                self.table.setItem(i, 2, QTableWidgetItem(_tr("status.not_downloaded_hash_pinned", "Not downloaded - hash pinned")))
                 self.table.setItem(i, 3, QTableWidgetItem("--"))
                 self.table.setItem(i, 4, QTableWidgetItem(""))
 
@@ -3267,7 +3304,7 @@ class ModelManagerDialog(QDialog):
             if os.path.isfile(path): os.remove(path)
             sidecar = path + '.sha256'
             if os.path.isfile(sidecar): os.remove(sidecar)
-            self.table.setItem(row, 2, QTableWidgetItem(_tr("status.not_downloaded", "Not downloaded")))
+            self.table.setItem(row, 2, QTableWidgetItem(_tr("status.not_downloaded_hash_pinned", "Not downloaded - hash pinned")))
             self.table.setItem(row, 3, QTableWidgetItem("--"))
             self.table.removeCellWidget(row, 4)
             self.table.setItem(row, 4, QTableWidgetItem(""))
@@ -3286,7 +3323,7 @@ class ModelManagerDialog(QDialog):
                 except Exception: pass
         _engine_cache['key'] = None; _engine_cache['engine'] = None
         for i in range(self.table.rowCount()):
-            self.table.setItem(i, 2, QTableWidgetItem(_tr("status.not_downloaded", "Not downloaded")))
+            self.table.setItem(i, 2, QTableWidgetItem(_tr("status.not_downloaded_hash_pinned", "Not downloaded - hash pinned")))
             self.table.setItem(i, 3, QTableWidgetItem("--"))
             self.table.removeCellWidget(i, 4)
             self.table.setItem(i, 4, QTableWidgetItem(""))

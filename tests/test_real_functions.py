@@ -282,10 +282,12 @@ class TestModelNeedsDownload:
 class TestLoadModelRegistry:
     def test_registry_round_trip(self):
         """Verify _load_model_registry produces models matching models.json."""
+        validate_sha256 = _extract_function('_validate_sha256')
         fn = _extract_function('_load_model_registry',
                                extra_imports={
                                    'MODEL_BASE': 'https://github.com/danielgatis/rembg/releases/download/v0.0.0',
                                    '__file__': os.path.abspath(_SRC_PATH),
+                                   '_validate_sha256': validate_sha256,
                                })
         models = fn()
         assert len(models) >= 10  # base 10 + DIS + massive
@@ -296,19 +298,67 @@ class TestLoadModelRegistry:
             assert 'size' in cfg
             assert 'mean' in cfg
             assert 'std' in cfg
+            assert 'sha256' in cfg
+            assert len(cfg['sha256']) == 64
             assert isinstance(cfg['size'], tuple)
             assert len(cfg['mean']) == 3
             assert len(cfg['std']) == 3
 
     def test_no_duplicate_files(self):
+        validate_sha256 = _extract_function('_validate_sha256')
         fn = _extract_function('_load_model_registry',
                                extra_imports={
                                    'MODEL_BASE': 'https://github.com/danielgatis/rembg/releases/download/v0.0.0',
                                    '__file__': os.path.abspath(_SRC_PATH),
+                                   '_validate_sha256': validate_sha256,
                                })
         models = fn()
         files = [cfg['file'] for cfg in models.values()]
         assert len(files) == len(set(files)), f"Duplicate model files: {files}"
+
+    def test_missing_model_hash_is_rejected(self, tmp_path):
+        registry = {
+            "base_url": "https://example.invalid/models",
+            "models": [{
+                "name": "broken",
+                "label": "Broken",
+                "file": "broken.onnx",
+                "url": "{base_url}/broken.onnx",
+                "input_size": [320, 320],
+                "mean": [0.5, 0.5, 0.5],
+                "std": [1.0, 1.0, 1.0],
+            }],
+        }
+        (tmp_path / 'models.json').write_text(json.dumps(registry), encoding='utf-8')
+        validate_sha256 = _extract_function('_validate_sha256')
+        fn = _extract_function('_load_model_registry',
+                               extra_imports={
+                                   'MODEL_BASE': registry['base_url'],
+                                   '__file__': str(tmp_path / 'AlphaCut.py'),
+                                   '_validate_sha256': validate_sha256,
+                                   '_log_warning': lambda message: None,
+                               })
+        try:
+            fn()
+            assert False, "Missing sha256 should reject the model registry"
+        except ValueError as exc:
+            assert 'sha256' in str(exc)
+
+    def test_model_downloads_compare_expected_sha256(self):
+        source = _read_source()
+        ensure_model = source.split('def _ensure_model(self, progress_fn=None, cancel_check=None):', 1)[1].split('\n\n_engine_cache', 1)[0]
+        assert "_validate_sha256(self.config.get('sha256')" in ensure_model
+        assert 'actual == expected' in ensure_model
+        assert 'digest != expected' in ensure_model
+        assert 'f.write(expected)' in ensure_model
+        assert 'Model cached' not in ensure_model
+
+    def test_model_manager_surfaces_verification_status(self):
+        source = _read_source()
+        dialog_src = source.split('class ModelManagerDialog', 1)[1].split('\n\n# ═', 1)[0]
+        assert 'status.model_verified' in dialog_src
+        assert 'status.needs_verification' in dialog_src
+        assert 'status.not_downloaded_hash_pinned' in dialog_src
 
 
 # ---------------------------------------------------------------------------

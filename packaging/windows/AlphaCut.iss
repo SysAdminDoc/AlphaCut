@@ -3,7 +3,7 @@
 #define MyAppURL "https://github.com/SysAdminDoc/AlphaCut"
 
 #ifndef AppVersion
-#define AppVersion "1.6.2"
+#define AppVersion "1.6.3"
 #endif
 
 #ifndef SourceExe

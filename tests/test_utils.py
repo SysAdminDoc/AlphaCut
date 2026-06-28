@@ -33,6 +33,10 @@ def test_model_registry_loads():
         assert 'name' in m
         assert 'file' in m
         assert 'url' in m
+        assert 'sha256' in m
+        assert len(m['sha256']) == 64
+        assert m['sha256'] == m['sha256'].lower()
+        int(m['sha256'], 16)
         assert 'input_size' in m
         assert len(m['input_size']) == 2
         assert 'mean' in m and len(m['mean']) == 3
