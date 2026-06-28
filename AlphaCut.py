@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.3 — AI Video Background Removal
+AlphaCut v1.6.4 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.3"
+__version__ = "1.6.4"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -4794,6 +4794,12 @@ def run_cli(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIPE MODE — raw RGBA to stdout for FFmpeg/scriptable pipelines
 # ═══════════════════════════════════════════════════════════════════════════════
+def _open_pipe_decoder(cmd):
+    """Open FFmpeg for pipe mode without risking a blocked stderr pipe."""
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            creationflags=_SUBPROCESS_FLAGS)
+
+
 def run_pipe(args):
     """Stream raw RGBA frames to stdout for piping into FFmpeg or other tools.
 
@@ -4857,8 +4863,7 @@ def run_pipe(args):
         cmd += ['-vf', f'scale={sw}:{sh}']
     cmd += ['-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1']
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            creationflags=_SUBPROCESS_FLAGS)
+    proc = _open_pipe_decoder(cmd)
     frame_size = sw * sh * 3
     stdout_bin = sys.stdout.buffer
     frame_num = 0

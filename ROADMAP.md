@@ -12,13 +12,6 @@ No active roadmap items.
 
 ### P0
 
-- [ ] P0 - Drain or suppress FFmpeg stderr in pipe mode
-  Why: `run_pipe()` pipes FFmpeg stderr without reading it, which can deadlock long/noisy pipe jobs.
-  Evidence: `AlphaCut.py:4750`; FFmpeg pipe workflows in rembg.
-  Touches: `AlphaCut.py`, `tests/test_real_functions.py`
-  Acceptance: Pipe mode uses `stderr=DEVNULL`, inherited stderr, or a drain thread; a regression test simulates a subprocess producing stderr without blocking.
-  Complexity: S
-
 ### P1
 
 - [ ] P1 - Share one real CLI parser between app and tests

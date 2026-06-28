@@ -1,10 +1,10 @@
-# AlphaCut v1.6.3
+# AlphaCut v1.6.4
 
 **Video & image background removal + compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, mixed batch processing, quick previews, and detected hardware encoding.
 
-![Version](https://img.shields.io/badge/Version-v1.6.3-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.6.4-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -24,7 +24,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 - Benchmark Mode — test 10 samples to estimate total processing time
 - Memory Monitoring — live RAM % during processing with warnings
 - Resume Interrupted Jobs — progress saved every 50 frames, auto-resumes on restart
-- Pipe Mode — `--pipe` streams raw RGBA to stdout for FFmpeg/scriptable pipelines
+- Pipe Mode — `--pipe` streams raw RGBA to stdout for FFmpeg/scriptable pipelines without blocking on FFmpeg diagnostics
 - Model Registry — `models.json` declares model name, URL, SHA-256 hash, input size, and license; downloads fail closed on mismatch
 
 **Advanced Compositing**

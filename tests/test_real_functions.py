@@ -9,6 +9,7 @@ import sys
 import ast
 import json
 import subprocess
+import threading
 import time
 import types
 import hashlib
@@ -359,6 +360,43 @@ class TestLoadModelRegistry:
         assert 'status.model_verified' in dialog_src
         assert 'status.needs_verification' in dialog_src
         assert 'status.not_downloaded_hash_pinned' in dialog_src
+
+
+# ---------------------------------------------------------------------------
+# Tests for pipe-mode process handling
+# ---------------------------------------------------------------------------
+class TestPipeMode:
+    def test_pipe_decoder_discards_noisy_stderr_without_blocking(self):
+        open_decoder = _extract_function('_open_pipe_decoder',
+                                         extra_imports={
+                                             'subprocess': subprocess,
+                                             '_SUBPROCESS_FLAGS': 0,
+                                         })
+        script = "\n".join([
+            "import sys",
+            "sys.stderr.buffer.write(b'x' * (1024 * 1024))",
+            "sys.stderr.flush()",
+            "sys.stdout.buffer.write(b'ok')",
+            "sys.stdout.flush()",
+        ])
+        proc = open_decoder([sys.executable, '-c', script])
+        result = {}
+
+        def read_stdout():
+            result['data'] = proc.stdout.read(2)
+
+        reader = threading.Thread(target=read_stdout, daemon=True)
+        reader.start()
+        reader.join(5)
+        if reader.is_alive():
+            proc.kill()
+            proc.wait(timeout=5)
+            raise AssertionError("pipe decoder blocked while child wrote stderr")
+
+        return_code = proc.wait(timeout=5)
+        assert result.get('data') == b'ok'
+        assert return_code == 0
+        assert proc.stderr is None
 
 
 # ---------------------------------------------------------------------------
