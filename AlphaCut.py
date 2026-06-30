@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.11 — AI Video Background Removal
+AlphaCut v1.6.12 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.11"
+__version__ = "1.6.12"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -1262,6 +1262,85 @@ def build_mask_preview_qimages(source_img, mask):
         pil_to_qimage(overlay_img),
     )
 
+
+def inspect_mask_quality(mask):
+    """Return lightweight preview metrics for a single L-mode mask."""
+    arr = np.array(mask.convert('L'), dtype=np.float32) / 255.0
+    if arr.size == 0:
+        return {
+            'foreground_pct': 0.0,
+            'transparent_pct': 0.0,
+            'transition_pct': 0.0,
+            'edge_density_pct': 0.0,
+            'jitter_risk': 'unknown',
+            'warnings': [{'key': 'mask_quality.warn.empty', 'default': 'Mask preview is empty.'}],
+        }
+    foreground_pct = float((arr >= 0.50).mean() * 100.0)
+    transparent_pct = float((arr <= 0.05).mean() * 100.0)
+    transition_pct = float(((arr > 0.05) & (arr < 0.95)).mean() * 100.0)
+    if arr.shape[0] > 1 and arr.shape[1] > 1:
+        gy, gx = np.gradient(arr)
+        edge_strength = np.hypot(gx, gy)
+        edge_density_pct = float((edge_strength > 0.08).mean() * 100.0)
+    else:
+        edge_density_pct = 0.0
+    if edge_density_pct > 18.0 or transition_pct > 28.0:
+        jitter_risk = 'high'
+    elif edge_density_pct > 10.0 or transition_pct > 14.0:
+        jitter_risk = 'medium'
+    else:
+        jitter_risk = 'low'
+
+    warnings = []
+    if foreground_pct < 1.0:
+        warnings.append({
+            'key': 'mask_quality.warn.tiny_subject',
+            'default': 'Subject coverage is very small; choose an ROI or try a portrait/general model.',
+        })
+    elif foreground_pct > 96.0:
+        warnings.append({
+            'key': 'mask_quality.warn.full_frame',
+            'default': 'Mask covers almost the entire frame; try another model or invert only when intentional.',
+        })
+    if transition_pct > 28.0:
+        warnings.append({
+            'key': 'mask_quality.warn.soft_mask',
+            'default': 'Large semi-transparent area detected; reduce edge softness or inspect Mask Gray before export.',
+        })
+    if edge_density_pct > 18.0:
+        warnings.append({
+            'key': 'mask_quality.warn.edge_noise',
+            'default': 'Busy mask edge detected; try temporal smoothing, ROI, or a higher-quality model.',
+        })
+
+    return {
+        'foreground_pct': foreground_pct,
+        'transparent_pct': transparent_pct,
+        'transition_pct': transition_pct,
+        'edge_density_pct': edge_density_pct,
+        'jitter_risk': jitter_risk,
+        'warnings': warnings,
+    }
+
+
+def format_mask_quality_summary(metrics):
+    risk = str(metrics.get('jitter_risk', 'unknown'))
+    risk_label = _tr(f"mask_quality.risk.{risk}", risk.upper())
+    return _trf(
+        "mask_quality.summary",
+        "Mask: foreground {foreground:.0f}% | transparent {transparent:.0f}% | transition {transition:.1f}% | edge {edge:.1f}% | jitter risk {risk}",
+        foreground=metrics.get('foreground_pct', 0.0),
+        transparent=metrics.get('transparent_pct', 0.0),
+        transition=metrics.get('transition_pct', 0.0),
+        edge=metrics.get('edge_density_pct', 0.0),
+        risk=risk_label,
+    )
+
+
+def mask_quality_warning_texts(metrics):
+    return [_tr(item.get('key', ''), item.get('default', '')) for item in metrics.get('warnings', [])]
+
+
 def _ftime(s):
     if s < 60: return f"{s:.0f}s"
     if s < 3600: return f"{s/60:.1f}m"
@@ -2397,7 +2476,7 @@ class ThumbnailLoader(QThread):
 # PREVIEW WORKER
 # ═══════════════════════════════════════════════════════════════════════════════
 class PreviewFrameWorker(QThread):
-    result = pyqtSignal(object, object, object, object, object)
+    result = pyqtSignal(object, object, object, object, object, object)
     status = pyqtSignal(str)
     error = pyqtSignal(str)
 
@@ -2476,9 +2555,10 @@ class PreviewFrameWorker(QThread):
             if self.bg_color is not None or bg_image is not None:
                 result = AlphaCutEngine.composite_on_background(result, bg_color=self.bg_color, bg_image=bg_image)
 
+            mask_metrics = inspect_mask_quality(current_mask)
             mask_bw, mask_gray, mask_overlay = build_mask_preview_qimages(img, current_mask)
             self.result.emit(pil_to_qimage(img.convert('RGBA')), pil_to_qimage(result),
-                             mask_bw, mask_gray, mask_overlay)
+                             mask_bw, mask_gray, mask_overlay, mask_metrics)
         except Exception as e: self.error.emit(f"{type(e).__name__}: {e}")
         finally:
             if tmp and os.path.isfile(tmp):
@@ -3888,6 +3968,11 @@ class AlphaCutWindow(QMainWindow):
         pl.addLayout(edit_row)
         self.lbl_edit_summary = QLabel(_tr("mask_edits.none", "No mask edits")); self.lbl_edit_summary.setObjectName("subtitle")
         pl.addWidget(self.lbl_edit_summary)
+        self.lbl_mask_quality = QLabel(_tr("mask_quality.placeholder", "Mask quality appears after preview"))
+        self.lbl_mask_quality.setObjectName("subtitle")
+        self.lbl_mask_quality.setWordWrap(True)
+        self.lbl_mask_quality.setAccessibleName(_tr("access.mask_quality", "Mask quality summary"))
+        pl.addWidget(self.lbl_mask_quality)
         self._preview_tool_changed(0)
         rl.addWidget(grp_prev, stretch=3)
 
@@ -3946,6 +4031,7 @@ class AlphaCutWindow(QMainWindow):
         self.chk_invert.setAccessibleName("Invert mask")
         self.chk_use_chroma.setAccessibleName("Use chroma-key")
         self.lbl_edit_summary.setAccessibleName("Mask edit summary")
+        self.lbl_mask_quality.setAccessibleName("Mask quality summary")
         self.progress_bar.setAccessibleName("Processing progress")
         self.log_view.setAccessibleName("Processing log")
         self.job_table.setAccessibleName("Batch job queue")
@@ -4524,15 +4610,36 @@ class AlphaCutWindow(QMainWindow):
         self._preview_worker.error.connect(self._preview_err)
         self._preview_worker.start()
 
-    def _preview_done(self, orig, proc, mask_bw, mask_gray, mask_overlay):
+    def _preview_done(self, orig, proc, mask_bw, mask_gray, mask_overlay, mask_metrics):
         self.preview.set_images(orig, proc, mask_bw, mask_gray, mask_overlay)
+        self._update_mask_quality(mask_metrics)
         self.btn_preview.setEnabled(True); self.btn_preview.setText(_tr("btn.preview", "Preview (Ctrl+P)"))
         self.lbl_status.setText(_tr("status.preview_ready", "Preview ready — drag divider to compare"))
         self._toast_msg(_tr("toast.preview_ready", "Preview ready — drag to compare"))
 
     def _preview_err(self, msg):
         self.btn_preview.setEnabled(True); self.btn_preview.setText(_tr("btn.preview", "Preview (Ctrl+P)"))
+        self.lbl_mask_quality.setText(_tr("mask_quality.placeholder", "Mask quality appears after preview"))
         self._log(f"Preview error: {msg}"); self._toast_msg("Preview failed")
+
+    def _update_mask_quality(self, metrics):
+        summary = format_mask_quality_summary(metrics or {})
+        warnings = mask_quality_warning_texts(metrics or {})
+        if warnings:
+            warning_detail = _trf("mask_quality.warning_prefix", "WARN: {message}", message="; ".join(warnings))
+            text = summary + "\n" + _trf("mask_quality.warning_count", "WARN: {count} issue(s) - see log", count=len(warnings))
+            tooltip = summary + "\n" + warning_detail
+        else:
+            text = summary + "\n" + _tr("mask_quality.ok", "OK: no obvious mask quality warnings.")
+            tooltip = text
+        self.lbl_mask_quality.setText(text)
+        self.lbl_mask_quality.setToolTip(tooltip)
+        self.lbl_mask_quality.setAccessibleDescription(tooltip)
+        self._log(_trf("log.mask_quality", "\nMask quality: {summary}", summary=summary))
+        for warning in warnings:
+            self._log(_trf("log.mask_quality_warning", "Mask quality warning: {message}", message=warning))
+        if warnings:
+            self._toast_msg(_tr("toast.mask_quality_warning", "Mask quality warnings - see preview"), 5000)
 
     def _preview_clip(self):
         preview_path = self._input_path

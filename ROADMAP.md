@@ -16,13 +16,6 @@ No active roadmap items.
 
 ### P2
 
-- [ ] P2 - Add mask quality inspection metrics
-  Why: Commercial and pro tools emphasize confidence/edge inspection; AlphaCut has mask views but no numeric or localized problem indicators.
-  Evidence: `AlphaCut.py:3536`; remove.bg/Unscreen workflow expectations; DaVinci/Adobe mask review patterns.
-  Touches: `AlphaCut.py`, `locale_template.json`
-  Acceptance: Preview computes lightweight edge/jitter/transparent-pixel summaries, surfaces warnings in the preview/log, and helps users choose model/refinement settings before full export.
-  Complexity: L
-
 ### P3
 
 - [ ] P3 - Add optional local watch-folder/server mode

@@ -14,6 +14,8 @@ import time
 import types
 import hashlib
 import tempfile
+import numpy as np
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Helper: extract a function from AlphaCut.py source without triggering
@@ -329,6 +331,51 @@ class TestUiAccessibilityResponsive:
             'self.job_table',
         ):
             assert widget_name in source
+
+
+# ---------------------------------------------------------------------------
+# Tests for mask quality inspection metrics
+# ---------------------------------------------------------------------------
+class TestMaskQualityInspection:
+    def setup_method(self):
+        self._inspect = _extract_function('inspect_mask_quality',
+                                          extra_imports={'np': np, 'Image': Image})
+
+    def test_full_frame_mask_warns(self):
+        mask = Image.new('L', (20, 20), 255)
+        metrics = self._inspect(mask)
+        assert metrics['foreground_pct'] == 100.0
+        assert metrics['transparent_pct'] == 0.0
+        assert metrics['jitter_risk'] == 'low'
+        assert any(item['key'] == 'mask_quality.warn.full_frame' for item in metrics['warnings'])
+
+    def test_tiny_subject_warns(self):
+        mask = Image.new('L', (100, 100), 0)
+        for x in range(3):
+            for y in range(3):
+                mask.putpixel((x, y), 255)
+        metrics = self._inspect(mask)
+        assert metrics['foreground_pct'] < 1.0
+        assert metrics['transparent_pct'] > 99.0
+        assert any(item['key'] == 'mask_quality.warn.tiny_subject' for item in metrics['warnings'])
+
+    def test_soft_transition_reports_jitter_risk(self):
+        values = np.tile(np.linspace(0, 255, 80, dtype=np.uint8), (80, 1))
+        mask = Image.fromarray(values, 'L')
+        metrics = self._inspect(mask)
+        assert metrics['transition_pct'] > 80.0
+        assert metrics['jitter_risk'] == 'high'
+        assert any(item['key'] == 'mask_quality.warn.soft_mask' for item in metrics['warnings'])
+
+    def test_preview_worker_emits_metrics_to_ui(self):
+        source = _read_source()
+        assert 'result = pyqtSignal(object, object, object, object, object, object)' in source
+        assert 'mask_metrics = inspect_mask_quality(current_mask)' in source
+        assert 'mask_bw, mask_gray, mask_overlay, mask_metrics' in source
+        assert 'def _preview_done(self, orig, proc, mask_bw, mask_gray, mask_overlay, mask_metrics):' in source
+        assert 'self.lbl_mask_quality = QLabel' in source
+        assert 'self._update_mask_quality(mask_metrics)' in source
+        assert 'format_mask_quality_summary(metrics or {})' in source
 
 
 # ---------------------------------------------------------------------------
