@@ -14,13 +14,6 @@ No active roadmap items.
 
 ### P1
 
-- [ ] P1 - Share one real CLI parser between app and tests
-  Why: `tests/test_cli.py` duplicates argparse setup and can drift from `main()` whenever formats or flags change.
-  Evidence: `AlphaCut.py:4791`; `tests/test_cli.py:8`; rembg CLI subcommand discipline.
-  Touches: `AlphaCut.py`, `tests/test_cli.py`
-  Acceptance: `build_parser()` is import/extractable, `main()` and tests use the same parser definition, and all documented README flags are asserted from that parser.
-  Complexity: S
-
 - [ ] P1 - Add generated-media integration tests for CLI and FFmpeg paths
   Why: Current tests validate helpers and static source patterns but do not exercise real output creation, JSON events, overwrite behavior, or encode failures.
   Evidence: `tests/`; `AlphaCut.py:1605`; `AlphaCut.py:4544`

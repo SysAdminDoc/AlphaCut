@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.4 — AI Video Background Removal
+AlphaCut v1.6.5 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.4"
+__version__ = "1.6.5"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -4903,7 +4903,7 @@ def run_pipe(args):
 # ═══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(
         prog='AlphaCut', description='AI Video Background Removal',
         epilog='Run without arguments for GUI mode.')
@@ -4936,7 +4936,11 @@ def main():
     parser.add_argument('--json', action='store_true',
                         help='Output machine-readable JSON lines (one JSON object per event)')
     parser.add_argument('--version', action='version', version=f'AlphaCut v{__version__}')
+    return parser
 
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
     args.audio = not args.no_audio
 

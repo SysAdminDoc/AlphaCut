@@ -1,7 +1,9 @@
 """Tests for AlphaCut CLI argument parsing — no model/GPU/FFmpeg required."""
 import argparse
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -9,38 +11,48 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ALPHACUT = os.path.join(_REPO_ROOT, 'AlphaCut.py')
+_README = os.path.join(_REPO_ROOT, 'README.md')
 
 
 def _build_parser():
-    """Build the same argument parser as main() without triggering bootstrap."""
-    output_formats = ['mp4', 'hevc', 'av1', 'webm', 'webp_anim', 'gif_anim',
-                      'greenscreen', 'prores', 'matte', 'fg_alpha', 'png_seq',
-                      'mp4_nvenc', 'hevc_nvenc', 'mp4_qsv', 'hevc_qsv']
-    parser = argparse.ArgumentParser(prog='AlphaCut')
-    parser.add_argument('--input', '-i', nargs='+')
-    parser.add_argument('--output', '-o')
-    parser.add_argument('--model', '-m', default='u2net_human_seg')
-    parser.add_argument('--format', '-f', default='mp4', choices=output_formats)
-    parser.add_argument('--quality', '-q', type=int, default=70)
-    parser.add_argument('--max-res', type=int, default=0)
-    parser.add_argument('--edge', type=int, default=0)
-    parser.add_argument('--shift', type=int, default=0)
-    parser.add_argument('--temporal', type=int, default=0)
-    parser.add_argument('--frame-skip', type=int, default=1)
-    parser.add_argument('--invert', action='store_true')
-    parser.add_argument('--spill', type=int, default=0)
-    parser.add_argument('--spill-color', default='green', choices=['green', 'blue', 'red'])
-    parser.add_argument('--shadow', type=int, default=0)
-    parser.add_argument('--bg-color')
-    parser.add_argument('--bg-image')
-    parser.add_argument('--no-audio', action='store_true')
-    parser.add_argument('-y', '--overwrite', action='store_true')
-    parser.add_argument('--gpu-device', type=int, default=-1)
-    parser.add_argument('--fp16', action='store_true')
-    parser.add_argument('--chroma-key', action='store_true')
-    parser.add_argument('--pipe', action='store_true')
-    parser.add_argument('--json', action='store_true')
-    return parser
+    """Extract AlphaCut.build_parser() without triggering bootstrap or GUI imports."""
+    with open(_ALPHACUT, encoding='utf-8') as f:
+        source = f.read()
+    tree = ast.parse(source)
+    ns = {'argparse': argparse, '__builtins__': __builtins__}
+    wanted_assignments = {'__version__', 'OUTPUT_FORMATS', 'HARDWARE_OUTPUT_FORMATS',
+                          'ALL_OUTPUT_FORMAT_VALUES'}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            target_names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if target_names & wanted_assignments:
+                exec(compile(ast.Module([node], []), _ALPHACUT, 'exec'), ns)
+        elif isinstance(node, ast.FunctionDef) and node.name == 'build_parser':
+            exec(compile(ast.Module([node], []), _ALPHACUT, 'exec'), ns)
+            return ns['build_parser']()
+    raise AssertionError("build_parser() not found in AlphaCut.py")
+
+
+def _parser_options(parser):
+    return {opt for action in parser._actions for opt in action.option_strings}
+
+
+def _format_choices(parser):
+    for action in parser._actions:
+        if '--format' in action.option_strings:
+            return tuple(action.choices)
+    raise AssertionError("--format action not found")
+
+
+def _read_source(path):
+    with open(path, encoding='utf-8') as f:
+        return f.read()
+
+
+def _readme_cli_flags():
+    readme = _read_source(_README)
+    section = readme.split('## CLI Reference', 1)[1].split('## AI Models', 1)[0]
+    return set(re.findall(r'`(-{1,2}[A-Za-z][A-Za-z0-9-]*)`', section))
 
 
 def _run_alphacut_cli(*args):
@@ -100,12 +112,25 @@ def test_multiple_inputs():
 
 def test_all_format_choices():
     parser = _build_parser()
-    valid = ['mp4', 'hevc', 'av1', 'webm', 'webp_anim', 'gif_anim',
-             'greenscreen', 'prores', 'matte', 'fg_alpha', 'png_seq',
-             'mp4_nvenc', 'hevc_nvenc', 'mp4_qsv', 'hevc_qsv']
-    for fmt in valid:
+    choices = _format_choices(parser)
+    assert len(choices) == len(set(choices))
+    assert {'mp4', 'hevc', 'av1', 'webm', 'prores', 'png_seq',
+            'mp4_nvenc', 'hevc_nvenc', 'mp4_qsv', 'hevc_qsv'} <= set(choices)
+    for fmt in choices:
         args = parser.parse_args(['-f', fmt])
         assert args.format == fmt
+
+
+def test_main_uses_shared_parser_builder():
+    source = _read_source(_ALPHACUT)
+    main_src = source.split('def main():', 1)[1].split("if __name__ == '__main__':", 1)[0]
+    assert 'parser = build_parser()' in main_src
+    assert 'argparse.ArgumentParser' not in main_src
+
+
+def test_readme_cli_flags_exist_in_real_parser():
+    missing = _readme_cli_flags() - _parser_options(_build_parser())
+    assert not missing
 
 
 def test_invalid_format_rejected():
