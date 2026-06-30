@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.5 — AI Video Background Removal
+AlphaCut v1.6.6 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.5"
+__version__ = "1.6.6"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue

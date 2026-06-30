@@ -14,13 +14,6 @@ No active roadmap items.
 
 ### P1
 
-- [ ] P1 - Add generated-media integration tests for CLI and FFmpeg paths
-  Why: Current tests validate helpers and static source patterns but do not exercise real output creation, JSON events, overwrite behavior, or encode failures.
-  Evidence: `tests/`; `AlphaCut.py:1605`; `AlphaCut.py:4544`
-  Touches: `tests/`, `AlphaCut.py`
-  Acceptance: Tests generate tiny image/video fixtures, run image CLI and at least one video encode path with a lightweight mocked/session model, and verify output, errors, and JSON event order.
-  Complexity: L
-
 - [ ] P1 - Preserve real worker errors in batch rows
   Why: Batch jobs can collapse model/FFmpeg/image exceptions into "No output produced", slowing recovery.
   Evidence: `AlphaCut.py:1920`; `AlphaCut.py:4417`; HandBrake queue/log UX.
