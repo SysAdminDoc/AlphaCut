@@ -1,10 +1,10 @@
-# AlphaCut v1.6.7
+# AlphaCut v1.6.8
 
 **Video & image background removal + compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, mixed batch processing, quick previews, and detected hardware encoding.
 
-![Version](https://img.shields.io/badge/Version-v1.6.7-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.6.8-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -68,7 +68,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 
 ## Installation
 
-Windows releases include `AlphaCut-Setup-<version>.exe`, an Inno Setup installer that installs AlphaCut per user and creates Start Menu shortcuts. The portable `AlphaCut-windows.exe` is still published for users who prefer a standalone executable.
+Windows releases include `AlphaCut-Setup-<version>.exe`, an Inno Setup installer that installs AlphaCut per user and creates Start Menu shortcuts. The portable `AlphaCut-windows.exe` is still published for users who prefer a standalone executable. Release builds also publish `.sha256` sidecar files and `SHA256SUMS.txt`.
 
 ### Docker
 
@@ -203,7 +203,10 @@ AlphaCut.py (single file, ~4,850 lines)
 
 ## Local Build
 
-```bash
-pyinstaller --onefile --windowed --runtime-hook packaging/pyinstaller_runtime_hook.py --collect-all onnxruntime --collect-submodules scipy AlphaCut.py
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\AlphaCut.iss
+```powershell
+.\packaging\windows\build-release.ps1
 ```
+
+The release script cleans stale build outputs, builds `dist\AlphaCut-windows.exe`, builds `dist\installer\AlphaCut-Setup-<version>.exe`, and writes `AlphaCut-windows.exe.sha256`, `AlphaCut-Setup-<version>.exe.sha256`, and `dist\SHA256SUMS.txt`.
+
+Signing is automatic when configured. Set `ALPHACUT_SIGN=1` to use the first suitable certificate in the Windows certificate store, or set `ALPHACUT_SIGN_CERT_SHA1` / `ALPHACUT_SIGN_CERT_PATH` plus optional `ALPHACUT_SIGN_CERT_PASSWORD`. `ALPHACUT_SIGNTOOL` can point to `signtool.exe` when it is not on `PATH`. Without signing configuration the same artifacts and checksums are produced unsigned, and the script prints a warning.

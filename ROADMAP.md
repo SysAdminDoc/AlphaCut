@@ -14,13 +14,6 @@ No active roadmap items.
 
 ### P1
 
-- [ ] P1 - Add signed release and checksum packaging path
-  Why: Windows installer and portable exe builds are not wired for signing or checksum manifests.
-  Evidence: `packaging/windows/AlphaCut.iss`; `AlphaCut-windows.spec`; Inno Setup SignTool docs.
-  Touches: `packaging/windows/AlphaCut.iss`, `AlphaCut-windows.spec`, `README.md`
-  Acceptance: Local release build can sign when a certificate is configured, emits SHA-256 checksum files for installer/exe, and documents unsigned fallback behavior when no certificate exists.
-  Complexity: M
-
 - [ ] P1 - Add accelerator install profiles and runtime diagnostics
   Why: Code probes CUDA, DirectML, and CoreML providers, but requirements/docs only make CPU and CUDA Docker paths obvious.
   Evidence: `AlphaCut.py:669`; `requirements.txt`; ONNX Runtime DirectML/CoreML docs; rembg CPU/GPU extra pattern.

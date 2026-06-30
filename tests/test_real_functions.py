@@ -435,6 +435,40 @@ class TestBatchErrors:
 
 
 # ---------------------------------------------------------------------------
+# Tests for Windows release packaging
+# ---------------------------------------------------------------------------
+class TestWindowsReleasePackaging:
+    def test_inno_setup_can_enable_configured_sign_tool(self):
+        path = os.path.join(os.path.dirname(__file__), '..', 'packaging', 'windows', 'AlphaCut.iss')
+        with open(path, encoding='utf-8') as f:
+            source = f.read()
+        assert '#ifdef InstallerSignTool' in source
+        assert 'SignTool={#InstallerSignTool}' in source
+        assert 'SignedUninstaller=yes' in source
+
+    def test_release_script_builds_signs_and_checksums_artifacts(self):
+        path = os.path.join(os.path.dirname(__file__), '..', 'packaging', 'windows', 'build-release.ps1')
+        with open(path, encoding='utf-8') as f:
+            source = f.read()
+        assert 'AlphaCut-windows.spec' in source
+        assert 'ALPHACUT_SIGN' in source
+        assert '/Salphacut_signtool=' in source
+        assert '/DInstallerSignTool=alphacut_signtool' in source
+        assert 'AlphaCut-windows.exe.sha256' in source
+        assert 'SHA256SUMS.txt' in source
+        assert 'Get-Sha256Hex' in source
+
+    def test_readme_documents_checksum_and_unsigned_fallback(self):
+        path = os.path.join(os.path.dirname(__file__), '..', 'README.md')
+        with open(path, encoding='utf-8') as f:
+            source = f.read()
+        assert 'build-release.ps1' in source
+        assert 'AlphaCut-windows.exe.sha256' in source
+        assert 'AlphaCut-Setup-<version>.exe.sha256' in source
+        assert 'produced unsigned' in source
+
+
+# ---------------------------------------------------------------------------
 # Tests for OUTPUT_FORMATS consistency
 # ---------------------------------------------------------------------------
 class TestOutputFormats:

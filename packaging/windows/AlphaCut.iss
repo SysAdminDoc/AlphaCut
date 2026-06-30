@@ -3,7 +3,7 @@
 #define MyAppURL "https://github.com/SysAdminDoc/AlphaCut"
 
 #ifndef AppVersion
-#define AppVersion "1.6.7"
+#define AppVersion "1.6.8"
 #endif
 
 #ifndef SourceExe
@@ -33,6 +33,10 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\AlphaCut.exe
+#ifdef InstallerSignTool
+SignTool={#InstallerSignTool}
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
