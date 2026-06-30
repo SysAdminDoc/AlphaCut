@@ -261,6 +261,37 @@ class TestEstimateOutputSize:
 
 
 # ---------------------------------------------------------------------------
+# Tests for animated WebP/GIF memory guards
+# ---------------------------------------------------------------------------
+class TestAnimatedExportMemory:
+    def setup_method(self):
+        self._estimate_anim = _extract_function('estimate_animation_memory_mb')
+
+    def test_animation_memory_estimate_uses_rgba_frames(self):
+        expected = 10 * 100 * 50 * 4 / (1024 * 1024) * 1.35
+        assert abs(self._estimate_anim(10, 100, 50, 'webp_anim') - expected) < 0.001
+
+    def test_animation_memory_estimate_handles_empty_inputs(self):
+        assert self._estimate_anim(0, 1920, 1080, 'gif_anim') == 0
+        assert self._estimate_anim(10, 0, 1080, 'webp_anim') == 0
+
+    def test_animated_encoders_preflight_before_loading_frame_lists(self):
+        source = _read_source()
+        encode_src = source.split('def _encode(self, ffmpeg, frames_dir, fps, info, total_frames=0):', 1)[1].split('\n\n# ', 1)[0]
+        run_src = source.split('def _process(self):', 1)[1].split('def _encode(self, ffmpeg, frames_dir, fps, info, total_frames=0):', 1)[0]
+        assert 'def _check_animation_memory_budget' in encode_src
+        assert 'animated_export_memory_limit_mb()' in encode_src
+        assert 'self._encode_error = None' in run_src
+        assert 'elif not self._encode_error:' in run_src
+        assert 'self._encode_error = msg' in encode_src
+        assert '--allow-large-animation' in source
+        webp_src = encode_src.split("if fmt == 'webp_anim':", 1)[1].split("if fmt == 'gif_anim':", 1)[0]
+        gif_src = encode_src.split("if fmt == 'gif_anim':", 1)[1].split('first = sorted', 1)[0]
+        assert webp_src.index('_check_animation_memory_budget') < webp_src.index('frames_pil = []')
+        assert gif_src.index('_check_animation_memory_budget') < gif_src.index('frames_gif = []')
+
+
+# ---------------------------------------------------------------------------
 # Tests for _model_needs_download (real implementation)
 # ---------------------------------------------------------------------------
 class TestModelNeedsDownload:

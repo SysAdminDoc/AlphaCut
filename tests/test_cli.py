@@ -94,6 +94,7 @@ def test_default_args():
     assert args.quality == 70
     assert args.gpu_device == -1
     assert args.fp16 is False
+    assert args.allow_large_animation is False
     assert args.runtime_info is False
     assert args.overwrite is False
 
@@ -159,6 +160,12 @@ def test_runtime_info_flag():
     parser = _build_parser()
     args = parser.parse_args(['--runtime-info'])
     assert args.runtime_info is True
+
+
+def test_allow_large_animation_flag():
+    parser = _build_parser()
+    args = parser.parse_args(['--allow-large-animation'])
+    assert args.allow_large_animation is True
 
 
 def test_overwrite_flag():

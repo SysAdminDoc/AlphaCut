@@ -1,10 +1,10 @@
-# AlphaCut v1.6.9
+# AlphaCut v1.6.10
 
 **Video & image background removal + compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, mixed batch processing, quick previews, and detected hardware encoding.
 
-![Version](https://img.shields.io/badge/Version-v1.6.9-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.6.10-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -22,7 +22,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 - Pipelined I/O — parallel decode/infer/save threads for higher throughput
 - Frame Skip — process every Nth frame with mask reuse (up to 10x speedup)
 - Benchmark Mode — test 10 samples to estimate total processing time
-- Memory Monitoring — live RAM % during processing with warnings
+- Memory Monitoring — live RAM % during processing with warnings; animated WebP/GIF exports estimate frame-list RAM and refuse unsafe clips unless explicitly overridden in CLI mode
 - Resume Interrupted Jobs — progress saved every 50 frames, auto-resumes on restart
 - Pipe Mode — `--pipe` streams raw RGBA to stdout for FFmpeg/scriptable pipelines without blocking on FFmpeg diagnostics
 - Model Registry — `models.json` declares model name, URL, SHA-256 hash, input size, and license; downloads fail closed on mismatch
@@ -151,6 +151,7 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 | `-f`, `--format` | `mp4` | mp4, hevc, av1, prores, webm, webp_anim, gif_anim, png_seq, greenscreen, matte, fg_alpha, mp4_nvenc, hevc_nvenc, mp4_qsv, hevc_qsv |
 | `--gpu-device` | -1 (auto) | GPU device index for inference |
 | `--fp16` | — | Use half-precision inference on GPU |
+| `--allow-large-animation` | — | Override animated WebP/GIF RAM safety refusal |
 | `--max-res` | 0 (original) | Max resolution |
 | `--edge` | 0 | Edge softness (0-100) |
 | `--shift` | 0 | Mask shift (-20 to +20) |

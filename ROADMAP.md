@@ -16,13 +16,6 @@ No active roadmap items.
 
 ### P2
 
-- [ ] P2 - Enforce memory limits for animated WebP and GIF exports
-  Why: Animated WebP/GIF builds load all frames into RAM and currently only warn for long clips.
-  Evidence: `AlphaCut.py:1685`; `AlphaCut.py:1716`; README WebM recommendation.
-  Touches: `AlphaCut.py`, `locale_template.json`, `tests/test_real_functions.py`
-  Acceptance: Export estimates memory before loading frames, refuses or requires explicit override when projected RAM is unsafe, and recommends WebM/PNG sequence alternatives.
-  Complexity: M
-
 - [ ] P2 - Add UI accessibility and responsive-layout validation
   Why: The GUI has accessible names, but fixed window/panel dimensions and dense dark controls need high-DPI, contrast, focus, and text-overflow verification.
   Evidence: `AlphaCut.py:3364`; `AlphaCut.py:3598`; Qt accessibility docs; WCAG 2.2.

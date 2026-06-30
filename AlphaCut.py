@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.9 — AI Video Background Removal
+AlphaCut v1.6.10 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.9"
+__version__ = "1.6.10"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -1213,6 +1213,29 @@ def estimate_output_size(info, fmt):
     bpf = {'prores': px*2.5, 'webm': px*0.15, 'png_seq': px*1.5, 'greenscreen': px*0.1, 'matte': px*0.3, 'mp4': px*0.08, 'hevc': px*0.06, 'av1': px*0.06, 'webp_anim': px*0.12, 'gif_anim': px*0.06}
     return bpf.get(fmt, px*0.5) * frames / (1024 * 1024)
 
+
+def animated_export_memory_limit_mb():
+    try:
+        return max(256, int(os.environ.get('ALPHACUT_ANIMATION_MEMORY_LIMIT_MB', '1536')))
+    except (TypeError, ValueError):
+        return 1536
+
+
+def estimate_animation_memory_mb(frame_count, width, height, fmt):
+    """Estimate peak Python-side memory for PIL animated WebP/GIF encoding."""
+    try:
+        frame_count = max(0, int(frame_count))
+        width = max(0, int(width))
+        height = max(0, int(height))
+    except (TypeError, ValueError):
+        return 0
+    if frame_count == 0 or width == 0 or height == 0:
+        return 0
+    rgba_mb = frame_count * width * height * 4 / (1024 * 1024)
+    multiplier = 1.35 if fmt == 'webp_anim' else 1.15
+    return rgba_mb * multiplier
+
+
 def pil_to_qimage(pil_img):
     if not _HAS_QT:
         raise RuntimeError("pil_to_qimage requires PyQt6")
@@ -1349,7 +1372,7 @@ class ProcessingWorker(QThread):
                  frame_skip=1, invert_mask=False, spill_strength=0, spill_color='green',
                  shadow_strength=0, bg_color=None, bg_image_path=None, resume_from=0,
                  quality=70, roi=None, mask_edits=None, gpu_device=-1, fp16=False,
-                 limit_seconds=None):
+                 limit_seconds=None, allow_large_animation=False):
         super().__init__()
         self.input_path = input_path; self.output_path = output_path
         self.model_key = model_key; self.output_format = output_format
@@ -1366,6 +1389,7 @@ class ProcessingWorker(QThread):
         self.gpu_device = int(gpu_device) if gpu_device is not None else -1
         self.fp16 = fp16
         self.limit_seconds = limit_seconds
+        self.allow_large_animation = bool(allow_large_animation)
         self._cancelled = False
 
     def cancel(self): self._cancelled = True
@@ -1713,6 +1737,7 @@ class ProcessingWorker(QThread):
             # ── PHASE 4: ENCODING (90% → 100%) ──
             self.status.emit("Encoding output...")
             self.progress.emit(90)
+            self._encode_error = None
             out = self._encode(ffmpeg, frames_out, fps, info, total)
 
             # Clean up persistent WIP directory after encoding
@@ -1724,7 +1749,8 @@ class ProcessingWorker(QThread):
                 if os.path.isfile(out): self.log.emit(f"Output: {out} ({os.path.getsize(out)/(1024*1024):.1f} MB)")
                 else: self.log.emit(f"Output: {out}")
                 self.finished.emit(out)
-            else: self.error.emit("Encoding failed.")
+            elif not self._encode_error:
+                self.error.emit("Encoding failed.")
         finally: shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def _encode(self, ffmpeg, frames_dir, fps, info, total_frames=0):
@@ -1807,12 +1833,55 @@ class ProcessingWorker(QThread):
                 shutil.rmtree(fg_dir, ignore_errors=True)
                 shutil.rmtree(alpha_dir, ignore_errors=True)
 
+        def _check_animation_memory_budget(tiff_files, label):
+            if not tiff_files:
+                return False
+            try:
+                first = Image.open(tiff_files[0])
+                width, height = first.size
+                first.close()
+            except Exception as e:
+                self.error.emit(f"Cannot inspect {label} frames for memory estimate: {e}")
+                return False
+            estimate_mb = estimate_animation_memory_mb(len(tiff_files), width, height, fmt)
+            limit_mb = animated_export_memory_limit_mb()
+            msg = _trf(
+                "error.animation_memory_limit",
+                "{label} export would load about {estimate:.0f} MB of frames into RAM, above the {limit:.0f} MB safety limit. Use WebM VP9+Alpha or PNG sequence, lower resolution/duration, or rerun CLI with --allow-large-animation.",
+                label=label,
+                estimate=estimate_mb,
+                limit=limit_mb,
+            )
+            if estimate_mb > limit_mb and not self.allow_large_animation:
+                self._encode_error = msg
+                self.log.emit(msg)
+                self.error.emit(msg)
+                return False
+            if estimate_mb > limit_mb:
+                self.log.emit(_trf(
+                    "log.animation_memory_override",
+                    "WARNING: Large {label} animation override enabled; estimated frame RAM is {estimate:.0f} MB.",
+                    label=label,
+                    estimate=estimate_mb,
+                ))
+            elif estimate_mb > limit_mb * 0.6:
+                self.log.emit(_trf(
+                    "log.animation_memory_estimate",
+                    "{label} animation frame RAM estimate: {estimate:.0f} MB of {limit:.0f} MB limit.",
+                    label=label,
+                    estimate=estimate_mb,
+                    limit=limit_mb,
+                ))
+            return True
+
         if fmt == 'webp_anim':
             tiff_files = sorted(glob.glob(os.path.join(frames_dir, 'frame_*.tiff')))
             if not tiff_files:
                 self.error.emit("No frames found for animated WebP."); return None
             n = len(tiff_files)
             out_file = os.path.splitext(self.output_path)[0] + '.webp'
+            if not _check_animation_memory_budget(tiff_files, "Animated WebP"):
+                return None
             if n > 300:
                 self.log.emit(f"INFO: Animated WebP with {n} frames — large clips may use significant RAM. Consider WebM VP9+Alpha for videos > 10s.")
             self.status.emit("Building animated WebP...")
@@ -1844,6 +1913,8 @@ class ProcessingWorker(QThread):
                 self.error.emit("No frames found for animated GIF."); return None
             n = len(tiff_files)
             out_file = os.path.splitext(self.output_path)[0] + '.gif'
+            if not _check_animation_memory_budget(tiff_files, "Animated GIF"):
+                return None
             if n > 150:
                 self.log.emit(f"INFO: Animated GIF with {n} frames — GIF is limited to 256 colours; consider WebM VP9+Alpha for longer clips.")
             self.status.emit("Building animated GIF...")
@@ -2050,7 +2121,8 @@ class BatchWorker(QThread):
                     roi=job.get('roi'),
                     mask_edits=job.get('mask_edits'),
                     gpu_device=job.get('gpu_device', -1),
-                    fp16=job.get('fp16', False))
+                    fp16=job.get('fp16', False),
+                    allow_large_animation=job.get('allow_large_animation', False))
 
             worker_errors = []
 
@@ -4889,7 +4961,8 @@ def run_cli(args):
             spill_strength=args.spill, spill_color=args.spill_color,
             shadow_strength=args.shadow, bg_color=bg_color,
             bg_image_path=args.bg_image, quality=args.quality,
-            gpu_device=args.gpu_device, fp16=args.fp16)
+            gpu_device=args.gpu_device, fp16=args.fp16,
+            allow_large_animation=args.allow_large_animation)
         worker.log.connect(_out)
         worker.status.connect(_status)
         worker.progress.connect(_progress)
@@ -5048,6 +5121,8 @@ def build_parser():
     parser.add_argument('--gpu-device', type=int, default=-1,
                         help='GPU device index for inference (-1=auto, 0=first GPU, etc.)')
     parser.add_argument('--fp16', action='store_true', help='Use FP16 half-precision on GPU (~2x faster, minimal quality loss)')
+    parser.add_argument('--allow-large-animation', action='store_true',
+                        help='Allow animated WebP/GIF exports above the RAM safety estimate')
     parser.add_argument('--chroma-key', action='store_true', help='Use FFmpeg chroma-key instead of AI (for green/blue screen footage)')
     parser.add_argument('--pipe', action='store_true',
                         help='Pipe raw RGBA frames to stdout (for FFmpeg stdin pipelines). '
