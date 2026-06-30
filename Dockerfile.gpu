@@ -13,10 +13,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY requirements-cli.txt .
-RUN pip3 install --no-cache-dir -r requirements-cli.txt && \
-    pip3 uninstall -y onnxruntime && \
-    pip3 install --no-cache-dir "onnxruntime-gpu>=1.19.0"
+COPY requirements-cli-cuda.txt .
+RUN pip3 install --no-cache-dir -r requirements-cli-cuda.txt
 
 COPY AlphaCut.py models.json locale_template.json ./
 

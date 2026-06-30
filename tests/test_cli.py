@@ -94,6 +94,7 @@ def test_default_args():
     assert args.quality == 70
     assert args.gpu_device == -1
     assert args.fp16 is False
+    assert args.runtime_info is False
     assert args.overwrite is False
 
 
@@ -152,6 +153,12 @@ def test_fp16_flag():
     parser = _build_parser()
     args = parser.parse_args(['--fp16'])
     assert args.fp16 is True
+
+
+def test_runtime_info_flag():
+    parser = _build_parser()
+    args = parser.parse_args(['--runtime-info'])
+    assert args.runtime_info is True
 
 
 def test_overwrite_flag():

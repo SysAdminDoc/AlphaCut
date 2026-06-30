@@ -1,10 +1,10 @@
-# AlphaCut v1.6.8
+# AlphaCut v1.6.9
 
 **Video & image background removal + compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, mixed batch processing, quick previews, and detected hardware encoding.
 
-![Version](https://img.shields.io/badge/Version-v1.6.8-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.6.9-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -64,11 +64,34 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 |---|---|
 | **Python** | 3.9+ |
 | **FFmpeg** | On PATH |
-| **NVIDIA GPU** | Optional — CUDA 12 + cuDNN 9 |
+| **CPU** | Default `onnxruntime` profile |
+| **NVIDIA GPU** | Optional CUDA 12 + cuDNN 9 profile |
+| **Windows GPU** | Optional DirectML profile |
+| **macOS GPU** | Optional CoreML profile on supported Apple hardware |
 
 ## Installation
 
 Windows releases include `AlphaCut-Setup-<version>.exe`, an Inno Setup installer that installs AlphaCut per user and creates Start Menu shortcuts. The portable `AlphaCut-windows.exe` is still published for users who prefer a standalone executable. Release builds also publish `.sha256` sidecar files and `SHA256SUMS.txt`.
+
+### Python Profiles
+
+```powershell
+# GUI CPU profile
+pip install -r requirements.txt
+
+# GUI accelerator profiles
+pip install -r requirements-cuda.txt       # NVIDIA CUDA 12 + cuDNN 9
+pip install -r requirements-directml.txt   # Windows DirectML
+pip install -r requirements-coreml.txt     # macOS CoreML-capable ONNX Runtime
+
+# Headless CLI equivalents
+pip install -r requirements-cli.txt
+pip install -r requirements-cli-cuda.txt
+pip install -r requirements-cli-directml.txt
+pip install -r requirements-cli-coreml.txt
+```
+
+Run `python AlphaCut.py --runtime-info` after installation to verify the active ONNX Runtime providers and see package guidance for unavailable accelerators.
 
 ### Docker
 
@@ -144,6 +167,7 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 | `--chroma-key` | — | Use FFmpeg chroma-key when a green/blue screen is detected |
 | `--pipe` | — | Stream raw RGBA to stdout for FFmpeg pipelines |
 | `--json` | — | Emit newline-delimited JSON progress/status/error events; failures exit non-zero and end with a `failed` event |
+| `--runtime-info` | — | Print ONNX Runtime provider diagnostics and install profile guidance |
 
 ## AI Models
 

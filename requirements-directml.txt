@@ -1,0 +1,6 @@
+# GUI Windows DirectML profile.
+PyQt6>=6.4.0
+Pillow>=12.2.0
+numpy>=1.21.0
+scipy>=1.7.0
+onnxruntime-directml>=1.19.0

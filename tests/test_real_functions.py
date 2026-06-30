@@ -469,6 +469,46 @@ class TestWindowsReleasePackaging:
 
 
 # ---------------------------------------------------------------------------
+# Tests for accelerator install profiles and runtime diagnostics
+# ---------------------------------------------------------------------------
+class TestAcceleratorProfiles:
+    def test_runtime_diagnostics_cover_provider_profiles(self):
+        source = _read_source()
+        assert 'ACCELERATOR_INSTALL_PROFILES' in source
+        assert 'requirements-cuda.txt' in source
+        assert 'requirements-directml.txt' in source
+        assert 'requirements-coreml.txt' in source
+        assert 'CUDAExecutionProvider' in source
+        assert 'DmlExecutionProvider' in source
+        assert 'CoreMLExecutionProvider' in source
+        assert 'def _format_runtime_diagnostics' in source
+        assert '--runtime-info' in source
+
+    def test_accelerator_requirement_files_do_not_mix_ort_packages(self):
+        root = os.path.dirname(os.path.dirname(__file__))
+        profiles = {
+            'requirements-cuda.txt': 'onnxruntime-gpu',
+            'requirements-directml.txt': 'onnxruntime-directml',
+            'requirements-coreml.txt': 'onnxruntime',
+            'requirements-cli-cuda.txt': 'onnxruntime-gpu',
+            'requirements-cli-directml.txt': 'onnxruntime-directml',
+            'requirements-cli-coreml.txt': 'onnxruntime',
+        }
+        for filename, expected in profiles.items():
+            with open(os.path.join(root, filename), encoding='utf-8') as f:
+                lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+            ort_lines = [line for line in lines if line.startswith('onnxruntime')]
+            assert ort_lines == [next(line for line in ort_lines if line.startswith(expected))]
+
+    def test_gpu_docker_uses_cuda_cli_profile(self):
+        path = os.path.join(os.path.dirname(__file__), '..', 'Dockerfile.gpu')
+        with open(path, encoding='utf-8') as f:
+            source = f.read()
+        assert 'requirements-cli-cuda.txt' in source
+        assert 'pip3 uninstall -y onnxruntime' not in source
+
+
+# ---------------------------------------------------------------------------
 # Tests for OUTPUT_FORMATS consistency
 # ---------------------------------------------------------------------------
 class TestOutputFormats:

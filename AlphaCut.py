@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.8 — AI Video Background Removal
+AlphaCut v1.6.9 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.8"
+__version__ = "1.6.9"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -71,9 +71,110 @@ def _pip_install(package, verbose=False):
 
 def _is_cli_mode():
     """Detect CLI/pipe mode from sys.argv before full arg parsing."""
-    return any(a in sys.argv for a in ['-i', '--input', '--pipe', '--version'])
+    return any(a in sys.argv for a in ['-i', '--input', '--pipe', '--version', '--runtime-info'])
 
 _CLI_MODE = _is_cli_mode()
+
+ACCELERATOR_INSTALL_PROFILES = {
+    'cpu': {
+        'label': 'CPU',
+        'provider': 'CPUExecutionProvider',
+        'gui': 'requirements.txt',
+        'cli': 'requirements-cli.txt',
+        'package': 'onnxruntime',
+    },
+    'cuda': {
+        'label': 'CUDA',
+        'provider': 'CUDAExecutionProvider',
+        'gui': 'requirements-cuda.txt',
+        'cli': 'requirements-cli-cuda.txt',
+        'package': 'onnxruntime-gpu',
+    },
+    'directml': {
+        'label': 'DirectML',
+        'provider': 'DmlExecutionProvider',
+        'gui': 'requirements-directml.txt',
+        'cli': 'requirements-cli-directml.txt',
+        'package': 'onnxruntime-directml',
+    },
+    'coreml': {
+        'label': 'CoreML',
+        'provider': 'CoreMLExecutionProvider',
+        'gui': 'requirements-coreml.txt',
+        'cli': 'requirements-cli-coreml.txt',
+        'package': 'onnxruntime',
+    },
+}
+
+
+def _cuda_runtime_available():
+    try:
+        import ctypes
+        if sys.platform == 'win32':
+            ctypes.WinDLL('cublasLt64_12.dll')
+        else:
+            ctypes.CDLL('libcublasLt.so.12')
+        return True
+    except (OSError, Exception):
+        return False
+
+
+def _runtime_diagnostics(available_providers=None, ort_version=None, platform_name=None):
+    """Return ONNX Runtime provider status and install guidance."""
+    platform_name = platform_name or sys.platform
+    providers = list(available_providers or [])
+    active = []
+    notes = []
+
+    if 'CUDAExecutionProvider' in providers:
+        if _cuda_runtime_available():
+            active.append('CUDA')
+        else:
+            notes.append('CUDA provider package is installed, but CUDA 12/cuDNN runtime libraries are not loadable.')
+    else:
+        notes.append('CUDA unavailable: install requirements-cuda.txt or requirements-cli-cuda.txt, plus NVIDIA CUDA 12 and cuDNN 9.')
+
+    if 'DmlExecutionProvider' in providers:
+        active.append('DirectML')
+    elif platform_name == 'win32':
+        notes.append('DirectML unavailable: install requirements-directml.txt or requirements-cli-directml.txt on Windows.')
+
+    if 'CoreMLExecutionProvider' in providers and platform_name == 'darwin':
+        active.append('CoreML')
+    elif platform_name == 'darwin':
+        notes.append('CoreML unavailable: install requirements-coreml.txt or requirements-cli-coreml.txt on macOS.')
+
+    if not active:
+        active.append('CPU')
+
+    return {
+        'version': ort_version or 'unknown',
+        'providers': providers,
+        'active': active,
+        'summary': ', '.join(active),
+        'notes': notes,
+    }
+
+
+def _format_runtime_diagnostics(diagnostics=None, include_notes=True):
+    if diagnostics is None:
+        import onnxruntime as _ort
+        diagnostics = _runtime_diagnostics(_ort.get_available_providers(), _ort.__version__)
+    providers = diagnostics.get('providers') or ['none']
+    lines = [
+        f"ONNX Runtime {diagnostics.get('version', 'unknown')} | active: {diagnostics.get('summary', 'CPU')}",
+        f"Providers: {', '.join(providers)}",
+    ]
+    if include_notes:
+        for note in diagnostics.get('notes', []):
+            lines.append(f"Runtime note: {note}")
+        profiles = ', '.join(
+            f"{profile['label']}={profile['gui']}/{profile['cli']}"
+            for profile in ACCELERATOR_INSTALL_PROFILES.values()
+        )
+        lines.append(f"Install profiles: {profiles}")
+    return "\n".join(lines)
+
 
 def _bootstrap():
     if sys.version_info < (3, 9):
@@ -119,19 +220,12 @@ def _bootstrap():
                 print(f"{pkg} cannot import: {e}"); sys.exit(1)
     import onnxruntime as ort
     ort.set_default_logger_severity(3)
-    providers = ort.get_available_providers()
-    gpu = any(p in providers for p in ['CUDAExecutionProvider', 'TensorrtExecutionProvider'])
-    gpu_usable = False
-    if gpu:
-        try:
-            import ctypes
-            if sys.platform == 'win32': ctypes.WinDLL('cublasLt64_12.dll')
-            else: ctypes.CDLL('libcublasLt.so.12')
-            gpu_usable = True
-        except (OSError, Exception): pass
-    accel = 'GPU (CUDA)' if gpu_usable else 'CPU'
-    if gpu and not gpu_usable: accel += ' (CUDA libs not in PATH)'
-    print(f"onnxruntime v{ort.__version__} | {accel}")
+    diagnostics = _runtime_diagnostics(ort.get_available_providers(), ort.__version__)
+    stream = sys.stderr if any(a in sys.argv for a in ['--pipe', '--json']) else sys.stdout
+    if '--runtime-info' not in sys.argv:
+        print(_format_runtime_diagnostics(diagnostics, include_notes=False), file=stream)
+        for note in diagnostics['notes']:
+            print(f"Runtime note: {note}", file=stream)
 
 _bootstrap()
 
@@ -694,15 +788,11 @@ class AlphaCutEngine:
     def _detect_providers(gpu_device=-1):
         providers = []; available = ort.get_available_providers()
         if 'CUDAExecutionProvider' in available:
-            try:
-                import ctypes
-                if sys.platform == 'win32': ctypes.WinDLL('cublasLt64_12.dll')
-                else: ctypes.CDLL('libcublasLt.so.12')
+            if _cuda_runtime_available():
                 if gpu_device >= 0:
                     providers.append(('CUDAExecutionProvider', {'device_id': str(gpu_device)}))
                 else:
                     providers.append('CUDAExecutionProvider')
-            except (OSError, Exception): pass
         if 'DmlExecutionProvider' in available:
             if gpu_device >= 0:
                 providers.append(('DmlExecutionProvider', {'device_id': str(gpu_device)}))
@@ -3205,7 +3295,7 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(_trf("dialog.about.title", "About {app}", app=APP_NAME))
-        self.setFixedSize(420, 380)
+        self.setFixedSize(560, 520)
         lay = QVBoxLayout(self); lay.setSpacing(12)
 
         # Header
@@ -3218,15 +3308,13 @@ class AboutDialog(QDialog):
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter); desc.setWordWrap(True); lay.addWidget(desc)
 
         # System info
-        import onnxruntime as _ort
-        providers = _ort.get_available_providers()
-        gpu = 'CUDA' if 'CUDAExecutionProvider' in providers else 'CPU'
+        runtime_info = _format_runtime_diagnostics(include_notes=True)
         info_text = (f"Python {sys.version.split()[0]}\n"
-                     f"ONNX Runtime {_ort.__version__} ({gpu})\n"
+                     f"{runtime_info}\n"
                      f"{_tr('about.platform', 'Platform')}: {sys.platform}\n"
                      f"{_tr('about.models', 'Models')}: {MODELS_DIR}")
         info = QLabel(info_text); info.setObjectName("subtitle"); info.setWordWrap(True)
-        info.setAlignment(Qt.AlignmentFlag.AlignCenter); lay.addWidget(info)
+        info.setAlignment(Qt.AlignmentFlag.AlignLeft); lay.addWidget(info)
 
         # Links
         links_row = QHBoxLayout()
@@ -4966,6 +5054,8 @@ def build_parser():
                              'Prints frame dimensions to stderr, then streams WxHx4 bytes per frame.')
     parser.add_argument('--json', action='store_true',
                         help='Output machine-readable JSON lines (one JSON object per event)')
+    parser.add_argument('--runtime-info', action='store_true',
+                        help='Print ONNX Runtime provider diagnostics and install profile guidance')
     parser.add_argument('--version', action='version', version=f'AlphaCut v{__version__}')
     return parser
 
@@ -4974,6 +5064,10 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     args.audio = not args.no_audio
+
+    if args.runtime_info:
+        print(_format_runtime_diagnostics(include_notes=True))
+        return
 
     if args.input and args.pipe:
         run_pipe(args)

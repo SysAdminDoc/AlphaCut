@@ -1,3 +1,4 @@
+# Headless CPU profile.
 Pillow>=12.2.0
 numpy>=1.21.0
 scipy>=1.7.0

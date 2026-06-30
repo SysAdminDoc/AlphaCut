@@ -14,13 +14,6 @@ No active roadmap items.
 
 ### P1
 
-- [ ] P1 - Add accelerator install profiles and runtime diagnostics
-  Why: Code probes CUDA, DirectML, and CoreML providers, but requirements/docs only make CPU and CUDA Docker paths obvious.
-  Evidence: `AlphaCut.py:669`; `requirements.txt`; ONNX Runtime DirectML/CoreML docs; rembg CPU/GPU extra pattern.
-  Touches: `requirements.txt`, `requirements-cli.txt`, `README.md`, `AlphaCut.py`
-  Acceptance: Users can choose CPU, CUDA, DirectML, or macOS CoreML install profiles, and startup/about diagnostics explain unavailable providers and required packages.
-  Complexity: M
-
 ### P2
 
 - [ ] P2 - Enforce memory limits for animated WebP and GIF exports
