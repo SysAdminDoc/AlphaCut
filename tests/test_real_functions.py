@@ -292,6 +292,46 @@ class TestAnimatedExportMemory:
 
 
 # ---------------------------------------------------------------------------
+# Tests for GUI accessibility and responsive layout contracts
+# ---------------------------------------------------------------------------
+class TestUiAccessibilityResponsive:
+    def test_main_window_uses_responsive_scroll_panel(self):
+        source = _read_source()
+        assert 'self.setMinimumSize(900, 650)' in source
+        assert 'left.setFixedWidth(400)' not in source
+        assert 'left.setMinimumWidth(340)' in source
+        assert 'left_scroll = QScrollArea()' in source
+        assert 'left_scroll.setWidgetResizable(True)' in source
+        assert 'left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)' in source
+        assert 'root.addWidget(left_scroll); root.addWidget(right, stretch=1)' in source
+
+    def test_status_and_memory_have_non_color_cues(self):
+        source = _read_source()
+        assert 'class StatusLabel(QLabel)' in source
+        assert 'self.lbl_status_cue = QLabel("")' in source
+        assert 'self.lbl_status.bind_cue_label(self.lbl_status_cue)' in source
+        assert '"ERROR"' in source and '"RUNNING"' in source and '"READY"' in source
+        assert 'label = "RAM HIGH" if ram_pct > 85 else "RAM WARN"' in source
+
+    def test_focus_order_and_accessible_names_are_pinned(self):
+        source = _read_source()
+        assert 'def _configure_focus_order(self):' in source
+        assert 'self._configure_focus_order()' in source
+        assert 'self.setTabOrder(first, second)' in source
+        assert source.count('setAccessibleName(') >= 35
+        for widget_name in (
+            'self.btn_browse',
+            'self.btn_batch',
+            'self.btn_start',
+            'self.btn_cancel',
+            'self.progress_bar',
+            'self.log_view',
+            'self.job_table',
+        ):
+            assert widget_name in source
+
+
+# ---------------------------------------------------------------------------
 # Tests for _model_needs_download (real implementation)
 # ---------------------------------------------------------------------------
 class TestModelNeedsDownload:
@@ -335,6 +375,11 @@ class TestLoadModelRegistry:
             assert isinstance(cfg['size'], tuple)
             assert len(cfg['mean']) == 3
             assert len(cfg['std']) == 3
+
+    def test_registry_loader_reads_utf8_labels(self):
+        source = _read_source()
+        registry_src = source.split('def _load_model_registry():', 1)[1].split('def ', 1)[0]
+        assert "open(registry_path, 'r', encoding='utf-8')" in registry_src
 
     def test_no_duplicate_files(self):
         validate_sha256 = _extract_function('_validate_sha256')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.10 — AI Video Background Removal
+AlphaCut v1.6.11 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.10"
+__version__ = "1.6.11"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -337,7 +337,7 @@ def _load_model_registry():
     """Load model registry from models.json, falling back to hardcoded defaults."""
     registry_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
     try:
-        with open(registry_path, 'r') as f:
+        with open(registry_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         base = data.get('base_url', MODEL_BASE)
         models = {}
@@ -715,6 +715,8 @@ QScrollBar::handle:vertical { background: #2a2e40; border-radius: 4px; min-heigh
 QScrollBar::handle:vertical:hover { background: #3a3e50; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QScrollArea#leftPanelScroll { border: none; background: transparent; }
+QLabel#statusCue { border-radius: 4px; padding: 2px 8px; font-weight: 800; font-size: 10px; min-width: 66px; }
 QTableWidget { background-color: #0a0c10; border: 1px solid #1a1d28; border-radius: 8px; gridline-color: #1a1d28; }
 QTableWidget::item { padding: 4px 8px; border: none; }
 QTableWidget::item:selected { background-color: #1a1e35; color: #c8ccd4; }
@@ -2807,6 +2809,12 @@ class DropZone(QLabel):
         self.setAcceptDrops(True); self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumHeight(60); self._set_style(False)
         self.setText(_tr("drop.hint", "Drop video/image file(s) here or click Browse"))
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(_tr("access.drop_zone", "Input drop zone"))
+        self.setAccessibleDescription(_tr(
+            "access.drop_zone.desc",
+            "Drop one or more supported media files here, or use the Browse buttons below."
+        ))
 
     def _set_style(self, active):
         bc = '#6c5ce7' if active else '#1e2230'
@@ -3133,6 +3141,70 @@ class ToastWidget(QLabel):
         anim.finished.connect(self.hide); anim.start(); self._fade_out_anim = anim
 
 
+class StatusLabel(QLabel):
+    """Status text that keeps a visible non-color cue in sync."""
+    _STYLES = {
+        "READY": "background: #151f18; color: #bbf7d0; border: 1px solid #166534;",
+        "RUNNING": "background: #161b2f; color: #c7d2fe; border: 1px solid #4338ca;",
+        "DONE": "background: #11231c; color: #a7f3d0; border: 1px solid #047857;",
+        "WARN": "background: #2a1d0a; color: #fde68a; border: 1px solid #92400e;",
+        "ERROR": "background: #2b1117; color: #fecaca; border: 1px solid #991b1b;",
+        "CANCELLED": "background: #211a2e; color: #ddd6fe; border: 1px solid #6d28d9;",
+        "INFO": "background: #151922; color: #c8ccd4; border: 1px solid #2a2e40;",
+    }
+
+    def __init__(self, text=""):
+        super().__init__("")
+        self._cue_label = None
+        self.setWordWrap(True)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setAccessibleName(_tr("access.status", "Processing status"))
+        self.setText(text)
+
+    def bind_cue_label(self, cue_label):
+        self._cue_label = cue_label
+        self._cue_label.setObjectName("statusCue")
+        self._cue_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cue_label.setAccessibleName(_tr("access.status_cue", "Status cue"))
+        self._sync_cue(self.text())
+
+    def setText(self, text):
+        value = str(text or "")
+        super().setText(value)
+        self.setToolTip(value)
+        self.setAccessibleDescription(value)
+        self._sync_cue(value)
+
+    @classmethod
+    def _classify(cls, text):
+        lower = str(text or "").lower()
+        if any(word in lower for word in ("error", "failed", "not found", "could not", "cannot", "required")):
+            return "ERROR"
+        if "cancel" in lower:
+            return "CANCELLED"
+        if any(word in lower for word in ("warning", "high memory", "low disk")):
+            return "WARN"
+        if any(word in lower for word in ("complete", "done", "ready:", "preview ready", "up to date")):
+            return "DONE"
+        if lower.strip() == "ready" or lower.startswith("ready "):
+            return "READY"
+        if any(word in lower for word in (
+            "analyzing", "extracting", "loading", "removing", "encoding",
+            "processing", "rendering", "benchmark", "starting", "checking",
+            "downloading", "saving", "building", "splitting"
+        )):
+            return "RUNNING"
+        return "INFO"
+
+    def _sync_cue(self, text):
+        if not self._cue_label:
+            return
+        cue = self._classify(text)
+        self._cue_label.setText(cue)
+        self._cue_label.setStyleSheet(f"QLabel#statusCue {{ {self._STYLES.get(cue, self._STYLES['INFO'])} }}")
+        self._cue_label.setAccessibleDescription(f"{cue}: {text}")
+
+
 class JobTable(QTableWidget):
     """Batch job queue table with thumbnail previews."""
     # Column indices
@@ -3323,7 +3395,7 @@ class NoScrollFilter(QObject):
 
 def make_slider(label_text, min_val, max_val, default, suffix=""):
     w = QWidget(); lay = QHBoxLayout(w); lay.setContentsMargins(0,0,0,0); lay.setSpacing(6)
-    lbl = QLabel(label_text); lbl.setFixedWidth(95); lay.addWidget(lbl)
+    lbl = QLabel(label_text); lbl.setMinimumWidth(88); lbl.setWordWrap(True); lay.addWidget(lbl)
     slider = QSlider(Qt.Orientation.Horizontal); slider.setRange(min_val, max_val); slider.setValue(default)
     lay.addWidget(slider, stretch=1)
     val_lbl = QLabel(f"{default}{suffix}"); val_lbl.setObjectName("sliderVal")
@@ -3532,7 +3604,7 @@ class AlphaCutWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
-        self.setMinimumSize(1050, 800); self.resize(1200, 900)
+        self.setMinimumSize(900, 650); self.resize(1180, 860)
         self.setWindowIcon(get_app_icon())
         self._worker = None; self._batch_worker = None; self._preview_worker = None; self._quick_preview_worker = None; self._model_dl_worker = None
         self._benchmark_worker = None
@@ -3596,7 +3668,7 @@ class AlphaCutWindow(QMainWindow):
         root = QHBoxLayout(central); root.setContentsMargins(10,10,10,10); root.setSpacing(12)
 
         # ── LEFT PANEL ──
-        left = QWidget(); left.setFixedWidth(400)
+        left = QWidget(); left.setMinimumWidth(340); left.setMaximumWidth(420)
         ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0); ll.setSpacing(4)
 
         # Input
@@ -3608,11 +3680,14 @@ class AlphaCutWindow(QMainWindow):
         gl.addWidget(self.drop_zone)
 
         btn_row = QHBoxLayout(); btn_row.setSpacing(4)
-        btn_browse = QPushButton(_tr("btn.browse", "Browse")); btn_browse.setObjectName("secondary"); btn_browse.clicked.connect(self._browse)
-        btn_row.addWidget(btn_browse)
-        btn_batch = QPushButton(_tr("btn.browse_batch", "Browse Batch")); btn_batch.setObjectName("secondary"); btn_batch.clicked.connect(self._browse_batch)
-        btn_row.addWidget(btn_batch)
+        self.btn_browse = QPushButton(_tr("btn.browse", "Browse")); self.btn_browse.setObjectName("secondary"); self.btn_browse.clicked.connect(self._browse)
+        self.btn_browse.setAccessibleName(_tr("access.browse", "Browse for input file"))
+        btn_row.addWidget(self.btn_browse)
+        self.btn_batch = QPushButton(_tr("btn.browse_batch", "Browse Batch")); self.btn_batch.setObjectName("secondary"); self.btn_batch.clicked.connect(self._browse_batch)
+        self.btn_batch.setAccessibleName(_tr("access.browse_batch", "Browse for batch input files"))
+        btn_row.addWidget(self.btn_batch)
         self.btn_recent = QPushButton(_tr("btn.recent", "Recent")); self.btn_recent.setObjectName("secondary")
+        self.btn_recent.setAccessibleName(_tr("access.recent", "Open recent files menu"))
         self.btn_recent.clicked.connect(self._show_recent); btn_row.addWidget(self.btn_recent)
         gl.addLayout(btn_row)
 
@@ -3670,8 +3745,9 @@ class AlphaCutWindow(QMainWindow):
         self.combo_presets = QComboBox(); self.combo_presets.addItem(_tr("combo.presets_placeholder", "-- Presets --"))
         self._refresh_presets(); self.combo_presets.currentIndexChanged.connect(self._load_preset)
         preset_row.addWidget(self.combo_presets, stretch=1)
-        btn_save_preset = QPushButton(_tr("btn.save", "Save")); btn_save_preset.setObjectName("small")
-        btn_save_preset.clicked.connect(self._save_preset); preset_row.addWidget(btn_save_preset)
+        self.btn_save_preset = QPushButton(_tr("btn.save", "Save")); self.btn_save_preset.setObjectName("small")
+        self.btn_save_preset.setAccessibleName(_tr("access.save_preset", "Save current settings as preset"))
+        self.btn_save_preset.clicked.connect(self._save_preset); preset_row.addWidget(self.btn_save_preset)
         sl.addLayout(preset_row)
         ll.addWidget(grp_set)
 
@@ -3725,21 +3801,26 @@ class AlphaCutWindow(QMainWindow):
         # Actions
         act_row = QHBoxLayout(); act_row.setSpacing(4)
         self.btn_preview = QPushButton(_tr("btn.preview", "Preview (Ctrl+P)")); self.btn_preview.setObjectName("secondary")
+        self.btn_preview.setAccessibleName(_tr("access.preview_frame", "Preview current frame"))
         self.btn_preview.setEnabled(False); self.btn_preview.setMinimumHeight(30)
         self.btn_preview.setShortcut(QKeySequence("Ctrl+P"))
         self.btn_preview.clicked.connect(self._preview_frame); act_row.addWidget(self.btn_preview)
         self.btn_quick_preview = QPushButton(_tr("btn.preview_10s", "Preview 10s")); self.btn_quick_preview.setObjectName("secondary")
+        self.btn_quick_preview.setAccessibleName(_tr("access.preview_clip", "Render ten second preview clip"))
         self.btn_quick_preview.setEnabled(False); self.btn_quick_preview.setMinimumHeight(30)
         self.btn_quick_preview.clicked.connect(self._preview_clip); act_row.addWidget(self.btn_quick_preview)
         self.btn_benchmark = QPushButton(_tr("btn.benchmark", "Benchmark")); self.btn_benchmark.setObjectName("secondary")
+        self.btn_benchmark.setAccessibleName(_tr("access.benchmark", "Benchmark processing speed"))
         self.btn_benchmark.setEnabled(False); self.btn_benchmark.setMinimumHeight(30)
         self.btn_benchmark.clicked.connect(self._run_benchmark); act_row.addWidget(self.btn_benchmark)
         ll.addLayout(act_row)
         self.btn_start = QPushButton(_tr("btn.start", "Start Processing (Ctrl+Enter)")); self.btn_start.setEnabled(False)
+        self.btn_start.setAccessibleName(_tr("access.start_processing", "Start processing"))
         self.btn_start.setMinimumHeight(36); self.btn_start.setStyleSheet("font-size: 13px;")
         self.btn_start.setShortcut(QKeySequence("Ctrl+Return"))
         self.btn_start.clicked.connect(self._start); ll.addWidget(self.btn_start)
         self.btn_cancel = QPushButton(_tr("btn.cancel", "Cancel")); self.btn_cancel.setObjectName("danger")
+        self.btn_cancel.setAccessibleName(_tr("access.cancel_processing", "Cancel processing"))
         self.btn_cancel.setShortcut(QKeySequence("Escape"))
         self.btn_cancel.setVisible(False); self.btn_cancel.clicked.connect(self._cancel); ll.addWidget(self.btn_cancel)
 
@@ -3747,12 +3828,15 @@ class AlphaCutWindow(QMainWindow):
         out_row = QHBoxLayout()
         self.btn_copy_path = QPushButton(_tr("btn.copy_path", "Copy Path"))
         self.btn_copy_path.setObjectName("small"); self.btn_copy_path.setVisible(False)
+        self.btn_copy_path.setAccessibleName(_tr("access.copy_output_path", "Copy output path"))
         self.btn_copy_path.clicked.connect(self._copy_path); out_row.addWidget(self.btn_copy_path)
         self.btn_open_folder = QPushButton(_tr("btn.open_folder", "Open Folder")); self.btn_open_folder.setObjectName("small")
         self.btn_open_folder.setVisible(False)
+        self.btn_open_folder.setAccessibleName(_tr("access.open_output_folder", "Open output folder"))
         self.btn_open_folder.clicked.connect(self._open_folder); out_row.addWidget(self.btn_open_folder)
         self.btn_drag_out = DragOutButton(_tr("btn.drag_out", "Drag to NLE"))
         self.btn_drag_out.setObjectName("small"); self.btn_drag_out.setVisible(False)
+        self.btn_drag_out.setAccessibleName(_tr("access.drag_output", "Drag output file to another application"))
         out_row.addWidget(self.btn_drag_out)
         ll.addLayout(out_row)
         ll.addStretch()
@@ -3792,11 +3876,13 @@ class AlphaCutWindow(QMainWindow):
         self.spin_brush = QSpinBox(); self.spin_brush.setRange(4, 256); self.spin_brush.setValue(32); self.spin_brush.setSuffix("px")
         self.spin_brush.valueChanged.connect(self._brush_size_changed)
         edit_row.addWidget(self.spin_brush)
-        btn_undo_stroke = QPushButton(_tr("btn.undo", "Undo")); btn_undo_stroke.setObjectName("small")
-        btn_undo_stroke.setShortcut(QKeySequence.StandardKey.Undo)
-        btn_undo_stroke.clicked.connect(self._undo_stroke)
-        edit_row.addWidget(btn_undo_stroke)
+        self.btn_undo_stroke = QPushButton(_tr("btn.undo", "Undo")); self.btn_undo_stroke.setObjectName("small")
+        self.btn_undo_stroke.setAccessibleName(_tr("access.undo_mask_edit", "Undo last mask edit"))
+        self.btn_undo_stroke.setShortcut(QKeySequence.StandardKey.Undo)
+        self.btn_undo_stroke.clicked.connect(self._undo_stroke)
+        edit_row.addWidget(self.btn_undo_stroke)
         self.btn_clear_edits = QPushButton(_tr("btn.clear", "Clear")); self.btn_clear_edits.setObjectName("small")
+        self.btn_clear_edits.setAccessibleName(_tr("access.clear_mask_edits", "Clear mask edits"))
         self.btn_clear_edits.clicked.connect(self._clear_mask_edits)
         edit_row.addWidget(self.btn_clear_edits)
         pl.addLayout(edit_row)
@@ -3813,7 +3899,13 @@ class AlphaCutWindow(QMainWindow):
         self.grp_batch = grp_batch; grp_batch.setVisible(False); rl.addWidget(grp_batch)
 
         grp_prog = QGroupBox(_tr("group.progress", "PROGRESS")); prl = QVBoxLayout(grp_prog); prl.setSpacing(6)
-        self.lbl_status = QLabel(_tr("status.ready", "Ready")); prl.addWidget(self.lbl_status)
+        status_row = QHBoxLayout(); status_row.setSpacing(8)
+        self.lbl_status_cue = QLabel("")
+        self.lbl_status = StatusLabel(_tr("status.ready", "Ready"))
+        self.lbl_status.bind_cue_label(self.lbl_status_cue)
+        status_row.addWidget(self.lbl_status_cue)
+        status_row.addWidget(self.lbl_status, stretch=1)
+        prl.addLayout(status_row)
         self.progress_bar = QProgressBar(); self.progress_bar.setRange(0, 100)
         self.progress_bar.setFormat("%p%"); prl.addWidget(self.progress_bar)
         prog_row = QHBoxLayout()
@@ -3850,6 +3942,14 @@ class AlphaCutWindow(QMainWindow):
         self.combo_mask_tool.setAccessibleName("Mask editing tool")
         self.spin_brush.setAccessibleName("Brush size")
         self.preview.setAccessibleName("Preview display")
+        self.chk_audio.setAccessibleName("Keep original audio")
+        self.chk_invert.setAccessibleName("Invert mask")
+        self.chk_use_chroma.setAccessibleName("Use chroma-key")
+        self.lbl_edit_summary.setAccessibleName("Mask edit summary")
+        self.progress_bar.setAccessibleName("Processing progress")
+        self.log_view.setAccessibleName("Processing log")
+        self.job_table.setAccessibleName("Batch job queue")
+        self.thumb_grid.setAccessibleName("Batch thumbnail grid")
 
         # Prevent scroll-wheel from changing settings — requires click-to-focus
         self._no_scroll = NoScrollFilter(self)
@@ -3857,10 +3957,37 @@ class AlphaCutWindow(QMainWindow):
             widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             widget.installEventFilter(self._no_scroll)
 
-        root.addWidget(left); root.addWidget(right, stretch=1)
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("leftPanelScroll")
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll.setMinimumWidth(360)
+        left_scroll.setMaximumWidth(440)
+        left_scroll.setWidget(left)
+        self.left_scroll = left_scroll
+        root.addWidget(left_scroll); root.addWidget(right, stretch=1)
+        self._configure_focus_order()
         self._toast = ToastWidget(central)
         self._glow_timer = QTimer(self); self._glow_timer.setInterval(80); self._glow_phase = 0.0
         self._glow_timer.timeout.connect(self._animate_progress)
+
+    def _configure_focus_order(self):
+        order = [
+            self.drop_zone, self.btn_browse, self.btn_batch, self.btn_recent,
+            self.combo_smart, self.combo_model, self.combo_fmt, self.sl_quality,
+            self.spin_res, self.spin_gpu, self.chk_fp16, self.chk_audio,
+            self.combo_naming, self.combo_presets, self.btn_save_preset,
+            self.sl_edge, self.sl_shift, self.sl_temporal, self.sl_frame_skip,
+            self.chk_invert, self.sl_spill, self.combo_spill, self.sl_shadow,
+            self.combo_bg, self.chk_use_chroma, self.btn_preview,
+            self.btn_quick_preview, self.btn_benchmark, self.btn_start,
+            self.btn_cancel, self.combo_preview_view, self.sl_scrub,
+            self.combo_mask_tool, self.spin_brush, self.btn_undo_stroke,
+            self.btn_clear_edits, self.job_table, self.log_view,
+        ]
+        for first, second in zip(order, order[1:]):
+            self.setTabOrder(first, second)
 
     # ── Helpers ──
     def _stat(self, val, label):
@@ -3892,8 +4019,10 @@ class AlphaCutWindow(QMainWindow):
 
     def _update_memory_display(self, ram_pct):
         color = '#ef4444' if ram_pct > 85 else '#f59e0b' if ram_pct > 70 else '#4a5168'
-        self.lbl_memory.setText(f"RAM: {ram_pct:.0f}%")
+        label = "RAM HIGH" if ram_pct > 85 else "RAM WARN" if ram_pct > 70 else "RAM"
+        self.lbl_memory.setText(f"{label}: {ram_pct:.0f}%")
         self.lbl_memory.setStyleSheet(f"color: {color};")
+        self.lbl_memory.setAccessibleDescription(self.lbl_memory.text())
 
     def _update_res_suggestion(self):
         if not self._video_info: self.lbl_res_suggest.setText(""); return

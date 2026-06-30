@@ -1,10 +1,10 @@
-# AlphaCut v1.6.10
+# AlphaCut v1.6.11
 
 **Video & image background removal + compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, mixed batch processing, quick previews, and detected hardware encoding.
 
-![Version](https://img.shields.io/badge/Version-v1.6.10-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.6.11-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -57,6 +57,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 - Model Manager — view/delete cached ONNX models with size info
 - Settings Persistence — all preferences saved between sessions with failure logging
 - Localization Ready — expanded i18n coverage with `locale_template.json` for community translations
+- Responsive Accessibility Pass — scroll-contained controls, explicit status cues, and pinned keyboard focus order for smaller/high-DPI desktop layouts
 
 ## Requirements
 

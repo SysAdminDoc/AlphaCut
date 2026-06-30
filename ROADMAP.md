@@ -16,13 +16,6 @@ No active roadmap items.
 
 ### P2
 
-- [ ] P2 - Add UI accessibility and responsive-layout validation
-  Why: The GUI has accessible names, but fixed window/panel dimensions and dense dark controls need high-DPI, contrast, focus, and text-overflow verification.
-  Evidence: `AlphaCut.py:3364`; `AlphaCut.py:3598`; Qt accessibility docs; WCAG 2.2.
-  Touches: `AlphaCut.py`, `locale_template.json`, optional UI smoke test tooling
-  Acceptance: Main workflows fit at 125 percent DPI and smaller desktop widths, focus order is predictable, non-color cues exist for status/errors, and contrast/text clipping issues are fixed.
-  Complexity: M
-
 - [ ] P2 - Add mask quality inspection metrics
   Why: Commercial and pro tools emphasize confidence/edge inspection; AlphaCut has mask views but no numeric or localized problem indicators.
   Evidence: `AlphaCut.py:3536`; remove.bg/Unscreen workflow expectations; DaVinci/Adobe mask review patterns.
