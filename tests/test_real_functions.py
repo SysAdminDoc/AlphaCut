@@ -400,6 +400,41 @@ class TestPipeMode:
 
 
 # ---------------------------------------------------------------------------
+# Tests for batch error propagation
+# ---------------------------------------------------------------------------
+class TestBatchErrors:
+    def setup_method(self):
+        self._summary = _extract_function('_batch_error_summary')
+
+    def test_batch_error_summary_uses_first_nonempty_line(self):
+        message = "\n\nRuntimeError: model failed\nTraceback details"
+        assert self._summary(message) == "RuntimeError: model failed"
+
+    def test_batch_error_summary_truncates_long_messages(self):
+        summary = self._summary("X" * 120, limit=20)
+        assert summary == "X" * 17 + "..."
+
+    def test_batch_worker_prefers_worker_error_over_missing_output(self):
+        source = _read_source()
+        batch_src = source.split('class BatchWorker', 1)[1].split('\n\n# ', 1)[0]
+        assert 'worker_errors = []' in batch_src
+        assert 'worker.error.connect(_record_worker_error)' in batch_src
+        assert 'self.job_error.emit(i, worker_errors[-1])' in batch_src
+        assert batch_src.index('if worker_errors:') < batch_src.index('elif os.path.exists(out):')
+
+    def test_job_table_displays_error_summary_and_tooltip(self):
+        source = _read_source()
+        table_src = source.split('class JobTable', 1)[1].split('\n\nclass DragOutButton', 1)[0]
+        assert 'def update_error(self, row, message):' in table_src
+        assert '_batch_error_summary(message)' in table_src
+        assert 'status.error_detail' in table_src
+        assert 'setToolTip' in table_src
+        window_src = source.split('def _start_batch', 1)[1].split('def _begin_processing', 1)[0]
+        assert 'job_error.connect(self._batch_job_error)' in window_src
+        assert 'Batch job {idx + 1} error' in window_src
+
+
+# ---------------------------------------------------------------------------
 # Tests for OUTPUT_FORMATS consistency
 # ---------------------------------------------------------------------------
 class TestOutputFormats:

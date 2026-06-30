@@ -140,6 +140,7 @@
   "status.done_file": "Done: {file}",
   "status.downloaded": "Downloaded",
   "status.error": "Error",
+  "status.error_detail": "Error: {message}",
   "status.ffmpeg_required": "FFmpeg required",
   "status.model_verified": "Verified",
   "status.needs_verification": "Needs verification",

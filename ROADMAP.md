@@ -14,13 +14,6 @@ No active roadmap items.
 
 ### P1
 
-- [ ] P1 - Preserve real worker errors in batch rows
-  Why: Batch jobs can collapse model/FFmpeg/image exceptions into "No output produced", slowing recovery.
-  Evidence: `AlphaCut.py:1920`; `AlphaCut.py:4417`; HandBrake queue/log UX.
-  Touches: `AlphaCut.py`, `locale_template.json`
-  Acceptance: Batch rows display the worker's last error summary, full detail remains in the log, and a failed job does not hide the original exception.
-  Complexity: S
-
 - [ ] P1 - Add signed release and checksum packaging path
   Why: Windows installer and portable exe builds are not wired for signing or checksum manifests.
   Evidence: `packaging/windows/AlphaCut.iss`; `AlphaCut-windows.spec`; Inno Setup SignTool docs.

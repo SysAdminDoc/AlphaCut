@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.6 — AI Video Background Removal
+AlphaCut v1.6.7 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.6"
+__version__ = "1.6.7"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -1894,6 +1894,16 @@ class ProcessingWorker(QThread):
 # ═══════════════════════════════════════════════════════════════════════════════
 # BATCH WORKER — sequential queue of ProcessingWorkers
 # ═══════════════════════════════════════════════════════════════════════════════
+def _batch_error_summary(message, limit=90):
+    """Return a compact first-line batch error for table display."""
+    text = str(message or "Unknown error").strip()
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "Unknown error")
+    first_line = " ".join(first_line.split())
+    if len(first_line) <= limit:
+        return first_line
+    return first_line[:max(0, limit - 3)].rstrip() + "..."
+
+
 class BatchWorker(QThread):
     """Processes a queue of jobs sequentially."""
     job_started = pyqtSignal(int, str)       # (index, filename)
@@ -1952,10 +1962,18 @@ class BatchWorker(QThread):
                     gpu_device=job.get('gpu_device', -1),
                     fp16=job.get('fp16', False))
 
+            worker_errors = []
+
+            def _record_worker_error(msg, idx=i, errors=worker_errors):
+                detail = str(msg)
+                errors.append(detail)
+                self.log.emit(f"Batch error [{idx+1}/{len(self.jobs)}]: {detail}")
+
             # Wire signals to batch relay
             worker.progress.connect(lambda pct, idx=i: self.job_progress.emit(idx, pct))
             worker.status.connect(lambda s, idx=i: self.job_status.emit(idx, s))
             worker.log.connect(self.log.emit)
+            worker.error.connect(_record_worker_error)
             worker.preview.connect(self.preview.emit)
             # Sync cancel state: when batch is cancelled, propagate to worker via progress updates
             worker.progress.connect(lambda pct, w=worker: setattr(w, '_cancelled', True) if self._cancelled else None)
@@ -1970,7 +1988,9 @@ class BatchWorker(QThread):
                     out = job['output']
                     if not is_image and job['format'] != 'png_seq':
                         out = os.path.splitext(out)[0] + format_extension(job['format'])
-                    if os.path.exists(out):
+                    if worker_errors:
+                        self.job_error.emit(i, worker_errors[-1])
+                    elif os.path.exists(out):
                         self.job_finished.emit(i, out)
                         completed += 1
                     else:
@@ -3011,6 +3031,13 @@ class JobTable(QTableWidget):
     def update_status(self, row, status):
         item = self.item(row, self.COL_STATUS)
         if item: item.setText(status)
+
+    def update_error(self, row, message):
+        item = self.item(row, self.COL_STATUS)
+        if item:
+            summary = _batch_error_summary(message)
+            item.setText(_trf("status.error_detail", "Error: {message}", message=summary))
+            item.setToolTip(str(message or "Unknown error"))
 
     def update_settings(self, row, settings):
         item = self.item(row, self.COL_SETTINGS)
@@ -4458,11 +4485,15 @@ class AlphaCutWindow(QMainWindow):
         self._batch_worker.job_progress.connect(lambda i, p: self._update_tray_progress(p))
         self._batch_worker.job_status.connect(self._batch_status_with_eta)
         self._batch_worker.job_finished.connect(lambda i, p: (self.job_table.update_status(i, "Done"), self.job_table.update_output(i, p)))
-        self._batch_worker.job_error.connect(lambda i, e: self.job_table.update_status(i, f"Error"))
+        self._batch_worker.job_error.connect(self._batch_job_error)
         self._batch_worker.log.connect(self._log)
         self._batch_worker.preview.connect(self.preview.set_frame)
         self._batch_worker.all_done.connect(self._batch_done)
         self._batch_worker.start()
+
+    def _batch_job_error(self, idx, message):
+        self.job_table.update_error(idx, message)
+        self._log(f"\nBatch job {idx + 1} error:\n{message}")
 
     def _begin_processing(self):
         self.btn_start.setEnabled(False); self.btn_preview.setEnabled(False); self.btn_quick_preview.setEnabled(False)
