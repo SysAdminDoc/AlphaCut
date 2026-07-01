@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AlphaCut v1.6.12 — AI Video Background Removal
+AlphaCut v1.6.13 — AI Video Background Removal
 Direct ONNX inference. No rembg dependency. Fully turnkey.
 
 Dependencies: PyQt6, numpy, Pillow, onnxruntime, scipy (auto-installed)
@@ -13,7 +13,7 @@ https://github.com/SysAdminDoc/AlphaCut
 import multiprocessing
 multiprocessing.freeze_support()
 
-__version__ = "1.6.12"
+__version__ = "1.6.13"
 
 import sys, os, subprocess, shutil, json, tempfile, time, traceback, glob, base64, argparse, hashlib
 import threading, queue
@@ -71,7 +71,8 @@ def _pip_install(package, verbose=False):
 
 def _is_cli_mode():
     """Detect CLI/pipe mode from sys.argv before full arg parsing."""
-    return any(a in sys.argv for a in ['-i', '--input', '--pipe', '--version', '--runtime-info'])
+    flags = ['-i', '--input', '--pipe', '--watch-folder', '--version', '--runtime-info']
+    return any(arg == flag or arg.startswith(flag + '=') for arg in sys.argv for flag in flags)
 
 _CLI_MODE = _is_cli_mode()
 
@@ -436,6 +437,7 @@ _HW_ENCODER_CACHE = None
 
 VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.ts', '.mts'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp'}
+WATCH_STATE_FILENAME = ".alphacut-watch-state.json"
 
 BG_COLORS = {
     "None (Transparent)": None,
@@ -639,6 +641,235 @@ def _stable_resume_id(input_path):
         os.path.realpath(os.path.abspath(os.path.normpath(str(input_path))))
     )
     return hashlib.sha256(normalized.encode('utf-8', 'surrogatepass')).hexdigest()[:16]
+
+def _watch_file_signature(path):
+    """Return the size/mtime signature used to decide whether a file is stable."""
+    st = os.stat(path)
+    return {'size': int(st.st_size), 'mtime_ns': int(st.st_mtime_ns)}
+
+def _watch_signature_key(path, signature):
+    normalized = os.path.normcase(
+        os.path.realpath(os.path.abspath(os.path.normpath(str(path))))
+    )
+    return f"{normalized}|{signature['size']}|{signature['mtime_ns']}"
+
+def _watch_candidate_ready(path, pending, now, stable_seconds):
+    """Update pending state and return True once a file signature is stable."""
+    signature = _watch_file_signature(path)
+    record = pending.get(path)
+    if not record or record.get('signature') != signature:
+        pending[path] = {'signature': signature, 'stable_since': float(now)}
+        return False
+    return float(now) - float(record.get('stable_since', now)) >= max(0.0, float(stable_seconds))
+
+def _watch_supported_file(path):
+    ext = os.path.splitext(path)[1].lower()
+    return ext in VIDEO_EXTENSIONS or ext in IMAGE_EXTENSIONS
+
+def _watch_scan_candidates(watch_folder):
+    candidates = []
+    for entry in os.scandir(watch_folder):
+        if not entry.is_file():
+            continue
+        name = entry.name
+        lower_name = name.lower()
+        if name.startswith('.') or lower_name.endswith(('.tmp', '.part', '.crdownload')):
+            continue
+        if _watch_supported_file(entry.path):
+            candidates.append(os.path.abspath(entry.path))
+    return sorted(candidates, key=lambda p: os.path.basename(p).lower())
+
+def _watch_load_state(path):
+    if not path or not os.path.isfile(path):
+        return {'processed': []}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get('processed'), list):
+            return {'processed': [str(x) for x in data.get('processed', [])]}
+    except Exception:
+        pass
+    return {'processed': []}
+
+def _watch_save_state(path, processed):
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    data = {'version': 1, 'processed': sorted(processed)[-10000:]}
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2)
+
+def _watch_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+    return default
+
+def _watch_int(value, default, minimum=None, maximum=None):
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        result = int(default)
+    if minimum is not None:
+        result = max(minimum, result)
+    if maximum is not None:
+        result = min(maximum, result)
+    return result
+
+def _watch_preset_to_cli_options(preset):
+    """Convert a GUI or CLI-style JSON preset to run_cli-compatible options."""
+    if not isinstance(preset, dict):
+        return {}
+    options = {}
+    model_names = list(MODELS.keys())
+    format_values = list(dict.fromkeys(list(OUTPUT_FORMATS.values()) + list(HARDWARE_OUTPUT_FORMATS.values())))
+
+    if preset.get('model'):
+        options['model'] = str(preset['model'])
+    elif preset.get('model_key'):
+        options['model'] = str(preset['model_key'])
+    elif 'model_index' in preset and model_names:
+        idx = _watch_int(preset.get('model_index'), 0, 0, len(model_names) - 1)
+        options['model'] = model_names[idx]
+
+    if preset.get('format'):
+        options['format'] = str(preset['format'])
+    elif preset.get('output_format'):
+        options['format'] = str(preset['output_format'])
+    elif 'format_index' in preset and format_values:
+        idx = _watch_int(preset.get('format_index'), 0, 0, len(format_values) - 1)
+        options['format'] = format_values[idx]
+
+    if preset.get('output_pattern'):
+        options['output_pattern'] = str(preset['output_pattern'])
+    elif 'naming_index' in preset:
+        idx = _watch_int(preset.get('naming_index'), 0, 0, len(NAMING_PATTERNS) - 1)
+        options['output_pattern'] = NAMING_PATTERNS[idx]
+
+    numeric_keys = {
+        'max_res': ('max_res', 0, 0, None),
+        'edge': ('edge', 0, 0, 100),
+        'edge_softness': ('edge', 0, 0, 100),
+        'shift': ('shift', 0, -20, 20),
+        'mask_shift': ('shift', 0, -20, 20),
+        'temporal': ('temporal', 0, 0, 7),
+        'temporal_smooth': ('temporal', 0, 0, 7),
+        'frame_skip': ('frame_skip', 1, 1, 1000),
+        'spill': ('spill', 0, 0, 100),
+        'spill_strength': ('spill', 0, 0, 100),
+        'shadow': ('shadow', 0, 0, 100),
+        'shadow_strength': ('shadow', 0, 0, 100),
+        'quality': ('quality', 70, 0, 100),
+        'gpu_device': ('gpu_device', -1, -1, None),
+    }
+    for source_key, (target_key, default, minimum, maximum) in numeric_keys.items():
+        if source_key in preset:
+            options[target_key] = _watch_int(preset.get(source_key), default, minimum, maximum)
+
+    bool_keys = {
+        'invert': 'invert',
+        'invert_mask': 'invert',
+        'fp16': 'fp16',
+        'allow_large_animation': 'allow_large_animation',
+        'chroma_key': 'chroma_key',
+        'overwrite': 'overwrite',
+    }
+    for source_key, target_key in bool_keys.items():
+        if source_key in preset:
+            options[target_key] = _watch_bool(preset.get(source_key), False)
+
+    if 'keep_audio' in preset:
+        options['audio'] = _watch_bool(preset.get('keep_audio'), True)
+    if 'no_audio' in preset:
+        options['audio'] = not _watch_bool(preset.get('no_audio'), False)
+
+    spill_colors = ['green', 'blue', 'red']
+    if preset.get('spill_color') in spill_colors:
+        options['spill_color'] = preset['spill_color']
+    elif 'spill_color_index' in preset:
+        idx = _watch_int(preset.get('spill_color_index'), 0, 0, len(spill_colors) - 1)
+        options['spill_color'] = spill_colors[idx]
+
+    bg_color = preset.get('bg_color')
+    if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
+        options['bg_color'] = ','.join(str(_watch_int(c, 0, 0, 255)) for c in bg_color)
+    elif isinstance(bg_color, str) and bg_color.strip():
+        options['bg_color'] = bg_color.strip()
+
+    if preset.get('bg_image'):
+        options['bg_image'] = str(preset['bg_image'])
+    elif preset.get('bg_image_path'):
+        options['bg_image'] = str(preset['bg_image_path'])
+
+    return options
+
+def _load_watch_preset(preset_ref):
+    if not preset_ref:
+        return {}
+    if os.path.isfile(preset_ref):
+        with open(preset_ref, 'r', encoding='utf-8') as f:
+            return _watch_preset_to_cli_options(json.load(f))
+    presets = load_presets()
+    if preset_ref in presets:
+        return _watch_preset_to_cli_options(presets[preset_ref])
+    raise ValueError(f"Watch preset not found: {preset_ref}")
+
+def _watch_output_path(input_path, output_dir, model, fmt, output_pattern):
+    ext = os.path.splitext(input_path)[1].lower()
+    output_fmt = 'png' if ext in IMAGE_EXTENSIONS else fmt
+    generated = generate_output_name(input_path, output_pattern, model, output_fmt)
+    return os.path.join(output_dir, os.path.basename(generated))
+
+def _watch_build_cli_args(args, input_path, output_dir, preset_options):
+    options = dict(preset_options or {})
+    model = options.get('model', args.model)
+    fmt = options.get('format', args.format)
+    output_pattern = options.get('output_pattern') or getattr(args, 'watch_output_pattern', None) or "{name}_alphacut"
+    output_path = _watch_output_path(input_path, output_dir, model, fmt, output_pattern)
+    audio = options.get('audio', not args.no_audio)
+    return argparse.Namespace(
+        input=[input_path],
+        output=output_path,
+        model=model,
+        format=fmt,
+        quality=options.get('quality', args.quality),
+        max_res=options.get('max_res', args.max_res),
+        edge=options.get('edge', args.edge),
+        shift=options.get('shift', args.shift),
+        temporal=options.get('temporal', args.temporal),
+        frame_skip=options.get('frame_skip', args.frame_skip),
+        invert=options.get('invert', args.invert),
+        spill=options.get('spill', args.spill),
+        spill_color=options.get('spill_color', args.spill_color),
+        shadow=options.get('shadow', args.shadow),
+        bg_color=options.get('bg_color', args.bg_color),
+        bg_image=options.get('bg_image', args.bg_image),
+        no_audio=not bool(audio),
+        audio=bool(audio),
+        overwrite=options.get('overwrite', args.overwrite),
+        gpu_device=options.get('gpu_device', args.gpu_device),
+        fp16=options.get('fp16', args.fp16),
+        allow_large_animation=options.get('allow_large_animation', args.allow_large_animation),
+        chroma_key=options.get('chroma_key', args.chroma_key),
+        pipe=False,
+        json=args.json,
+        runtime_info=False,
+        watch_folder=None,
+    )
+
+def _watch_event(use_json, event_type, **fields):
+    if use_json:
+        event = {'type': event_type}
+        event.update(fields)
+        _json_line(event)
+        return
+    details = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
+    print(f"WATCH {event_type}: {details}".rstrip(), flush=True)
 
 def reveal_in_explorer(path):
     """Open the containing folder and select the file."""
@@ -5219,6 +5450,106 @@ def run_cli(args):
     _finish()
 
 
+def run_watch_folder(args):
+    """Poll a local folder and process stable media files through run_cli."""
+    use_json = getattr(args, 'json', False)
+    if getattr(args, 'input', None):
+        _watch_event(use_json, 'error', message='--watch-folder cannot be combined with --input')
+        sys.exit(2)
+
+    watch_folder = os.path.abspath(args.watch_folder)
+    if not os.path.isdir(watch_folder):
+        _watch_event(use_json, 'error', message=f'Watch folder not found: {watch_folder}')
+        sys.exit(1)
+
+    output_dir = os.path.abspath(args.watch_output or os.path.join(watch_folder, 'alphacut_out'))
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        preset_options = _load_watch_preset(args.watch_preset)
+    except Exception as e:
+        _watch_event(use_json, 'error', message=str(e))
+        sys.exit(1)
+
+    state_path = os.path.abspath(args.watch_state or os.path.join(output_dir, WATCH_STATE_FILENAME))
+    state = _watch_load_state(state_path)
+    processed_signatures = set(state.get('processed', []))
+    pending = {}
+    retry_after = {}
+    processed_count = 0
+    failed_count = 0
+
+    _watch_event(
+        use_json, 'watch_start',
+        folder=watch_folder,
+        output=output_dir,
+        preset=args.watch_preset or '',
+        once=bool(args.watch_once),
+    )
+
+    while True:
+        now = time.monotonic()
+        candidates = _watch_scan_candidates(watch_folder)
+        active_candidates = 0
+
+        for path in candidates:
+            try:
+                signature = _watch_file_signature(path)
+            except OSError:
+                continue
+            signature_key = _watch_signature_key(path, signature)
+            if signature_key in processed_signatures:
+                pending.pop(path, None)
+                continue
+            if retry_after.get(path, 0) > now:
+                active_candidates += 1
+                continue
+            active_candidates += 1
+            try:
+                if not _watch_candidate_ready(path, pending, now, args.watch_stable_seconds):
+                    continue
+            except OSError:
+                continue
+
+            cli_args = _watch_build_cli_args(args, path, output_dir, preset_options)
+            _watch_event(use_json, 'watch_process_start', input=path, output=cli_args.output)
+            exit_code = 0
+            try:
+                run_cli(cli_args)
+            except SystemExit as e:
+                try:
+                    exit_code = int(e.code or 0)
+                except (TypeError, ValueError):
+                    exit_code = 1
+            except Exception as e:
+                exit_code = 1
+                _watch_event(use_json, 'error', input=path, output=cli_args.output,
+                             message=f'{type(e).__name__}: {e}')
+
+            if exit_code == 0:
+                processed_count += 1
+                processed_signatures.add(signature_key)
+                pending.pop(path, None)
+                retry_after.pop(path, None)
+                _watch_save_state(state_path, processed_signatures)
+                _watch_event(use_json, 'watch_process_done', input=path, output=cli_args.output)
+            else:
+                failed_count += 1
+                retry_after[path] = time.monotonic() + max(1.0, float(args.watch_retry_seconds))
+                _watch_event(use_json, 'watch_process_failed', input=path,
+                             output=cli_args.output, exit_code=exit_code)
+
+        if args.watch_once:
+            if processed_count or failed_count or active_candidates == 0:
+                _watch_event(use_json, 'watch_complete',
+                             processed=processed_count, failed=failed_count)
+                if failed_count:
+                    sys.exit(1)
+                return
+
+        time.sleep(max(0.2, float(args.watch_interval)))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIPE MODE — raw RGBA to stdout for FFmpeg/scriptable pipelines
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -5365,6 +5696,24 @@ def build_parser():
                              'Prints frame dimensions to stderr, then streams WxHx4 bytes per frame.')
     parser.add_argument('--json', action='store_true',
                         help='Output machine-readable JSON lines (one JSON object per event)')
+    parser.add_argument('--watch-folder',
+                        help='Poll a local folder and process stable video/image files as they arrive')
+    parser.add_argument('--watch-output',
+                        help='Output directory for watch-folder jobs (default: <watch-folder>/alphacut_out)')
+    parser.add_argument('--watch-preset',
+                        help='Preset JSON path or saved GUI preset name to apply to watch-folder jobs')
+    parser.add_argument('--watch-output-pattern', default='{name}_alphacut',
+                        help='Output naming pattern for watch-folder jobs')
+    parser.add_argument('--watch-interval', type=float, default=2.0,
+                        help='Seconds between watch-folder scans')
+    parser.add_argument('--watch-stable-seconds', type=float, default=2.0,
+                        help='Seconds a file size/mtime must remain unchanged before processing')
+    parser.add_argument('--watch-retry-seconds', type=float, default=30.0,
+                        help='Seconds before retrying a failed watch-folder job')
+    parser.add_argument('--watch-state',
+                        help='Watch-folder state JSON path (default: <watch-output>/.alphacut-watch-state.json)')
+    parser.add_argument('--watch-once', action='store_true',
+                        help='Process currently stable watch-folder files, then exit')
     parser.add_argument('--runtime-info', action='store_true',
                         help='Print ONNX Runtime provider diagnostics and install profile guidance')
     parser.add_argument('--version', action='version', version=f'AlphaCut v{__version__}')
@@ -5380,6 +5729,9 @@ def main():
         print(_format_runtime_diagnostics(include_notes=True))
         return
 
+    if args.watch_folder:
+        run_watch_folder(args)
+        return
     if args.input and args.pipe:
         run_pipe(args)
         return

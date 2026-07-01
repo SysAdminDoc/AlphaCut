@@ -11,4 +11,7 @@ RUN pip install --no-cache-dir -r requirements-cli.txt
 
 COPY AlphaCut.py models.json locale_template.json ./
 
+RUN mkdir -p /watch /output
+VOLUME ["/watch", "/output"]
+
 ENTRYPOINT ["python", "AlphaCut.py"]

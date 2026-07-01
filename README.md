@@ -1,10 +1,10 @@
-# AlphaCut v1.6.12
+# AlphaCut v1.6.13
 
 **Video & image background removal + compositing.**
 
 AlphaCut uses ONNX segmentation models to isolate subjects from video and image backgrounds, with built-in compositing, mixed batch processing, quick previews, and detected hardware encoding.
 
-![Version](https://img.shields.io/badge/Version-v1.6.12-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-v1.6.13-blue?style=flat-square)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20|%20Linux%20|%20macOS-blue?style=flat-square)
@@ -43,6 +43,7 @@ AlphaCut uses ONNX segmentation models to isolate subjects from video and image 
 - Quick Preview — render a 10-second sample clip before committing to full processing
 - Drag-Out Export — drag output file directly into NLE timelines
 - CLI Mode — full argparse interface for headless/scripted operation (with auto chroma-key detection)
+- Watch Folder Automation — poll a local folder, process stable media arrivals with saved presets, and emit JSON status
 - Auto-Naming — configurable output patterns ({name}, {model}, {format}, {date})
 - Export Presets — save/load all settings including compositing
 - Recent Files — last 20 files quick-access menu
@@ -100,6 +101,7 @@ Run `python AlphaCut.py --runtime-info` after installation to verify the active 
 ```bash
 docker build -t alphacut .
 docker run --rm -v $(pwd):/data alphacut -i /data/video.mp4 -f webm -o /data/output.webm
+docker run --rm -v /path/to/watch:/watch -v /path/to/output:/output alphacut --watch-folder /watch --watch-output /output --watch-once --json
 ```
 
 GPU-enabled Docker builds use the NVIDIA CUDA runtime and `onnxruntime-gpu`:
@@ -107,6 +109,7 @@ GPU-enabled Docker builds use the NVIDIA CUDA runtime and `onnxruntime-gpu`:
 ```bash
 docker build -f Dockerfile.gpu -t alphacut:gpu .
 docker run --rm --gpus all -v $(pwd):/data alphacut:gpu -i /data/video.mp4 -f webm -o /data/output.webm --gpu-device 0
+docker run --rm --gpus all -v /path/to/watch:/watch -v /path/to/output:/output alphacut:gpu --watch-folder /watch --watch-output /output --watch-preset /output/preset.json --json
 ```
 
 ## Quick Start
@@ -141,6 +144,9 @@ python AlphaCut.py -i video.mp4 -f fg_alpha -m BiRefNet
 
 # CLI — pipe raw RGBA into FFmpeg
 python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba -s 1920x1080 -r 30 -i - -c:v libvpx-vp9 out.webm
+
+# CLI — process stable files from a local watch folder once
+python AlphaCut.py --watch-folder C:\AlphaCut\inbox --watch-output C:\AlphaCut\out --watch-preset C:\AlphaCut\preset.json --watch-once --json
 ```
 
 ## CLI Reference
@@ -170,6 +176,15 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 | `--chroma-key` | — | Use FFmpeg chroma-key when a green/blue screen is detected |
 | `--pipe` | — | Stream raw RGBA to stdout for FFmpeg pipelines |
 | `--json` | — | Emit newline-delimited JSON progress/status/error events; failures exit non-zero and end with a `failed` event |
+| `--watch-folder` | — | Poll a local folder and process stable media files as they arrive |
+| `--watch-output` | `<watch-folder>/alphacut_out` | Output directory for watch-folder jobs |
+| `--watch-preset` | — | Preset JSON path or saved GUI preset name for watch-folder jobs |
+| `--watch-output-pattern` | `{name}_alphacut` | Output naming pattern for watch-folder jobs |
+| `--watch-interval` | 2.0 | Seconds between watch-folder scans |
+| `--watch-stable-seconds` | 2.0 | Seconds a file size/mtime must remain unchanged before processing |
+| `--watch-retry-seconds` | 30.0 | Seconds before retrying a failed watch-folder job |
+| `--watch-state` | `<watch-output>/.alphacut-watch-state.json` | Processed-file signature state file |
+| `--watch-once` | — | Process currently stable watch-folder files, then exit |
 | `--runtime-info` | — | Print ONNX Runtime provider diagnostics and install profile guidance |
 
 ## AI Models
@@ -196,7 +211,7 @@ python AlphaCut.py -i video.mp4 --pipe 2>nul | ffmpeg -f rawvideo -pix_fmt rgba 
 ## Architecture
 
 ```
-AlphaCut.py (single file, ~4,850 lines)
+AlphaCut.py (single file, ~5,200 lines)
 ├── Crash Handler + Bootstrap (auto-installs all deps)
 ├── AlphaCutEngine — ONNX inference + mask refinement
 │   ├── Edge refinement, temporal smoothing
@@ -223,6 +238,7 @@ AlphaCut.py (single file, ~4,850 lines)
 ├── ToastWidget — Floating notifications
 ├── CLI — Full argparse headless interface
 ├── Pipe Mode — Raw RGBA stdout for FFmpeg pipelines
+├── Watch Folder Mode — Local polling automation with preset support and JSON status
 ├── i18n — _tr() scaffold + locale_template.json
 ├── models.json — External model registry
 └── Settings/Presets — JSON persistence

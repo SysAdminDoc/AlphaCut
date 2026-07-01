@@ -676,3 +676,96 @@ class TestOutputFormats:
         assert 'sys.exit(1)' in run_cli
         assert 'worker.error.connect' in run_cli
         assert 'No output produced.' in run_cli
+
+
+# ---------------------------------------------------------------------------
+# Tests for watch-folder automation mode
+# ---------------------------------------------------------------------------
+class TestWatchFolderMode:
+    def test_cli_mode_detection_accepts_watch_equals_form(self):
+        is_cli_mode = _extract_function('_is_cli_mode', extra_imports={'sys': sys})
+        old_argv = sys.argv[:]
+        try:
+            sys.argv = ['AlphaCut.py', '--watch-folder=C:\\AlphaCut\\inbox']
+            assert is_cli_mode() is True
+        finally:
+            sys.argv = old_argv
+
+    def test_watch_candidate_requires_stable_signature(self, tmp_path):
+        watch_file_signature = _extract_function(
+            '_watch_file_signature',
+            extra_imports={'os': os},
+        )
+        watch_candidate_ready = _extract_function(
+            '_watch_candidate_ready',
+            extra_imports={'_watch_file_signature': watch_file_signature},
+        )
+        media = tmp_path / 'sample.png'
+        media.write_bytes(b'first')
+        pending = {}
+
+        assert not watch_candidate_ready(str(media), pending, now=10.0, stable_seconds=2.0)
+        assert not watch_candidate_ready(str(media), pending, now=11.0, stable_seconds=2.0)
+        assert watch_candidate_ready(str(media), pending, now=12.1, stable_seconds=2.0)
+
+        media.write_bytes(b'changed-size')
+        assert not watch_candidate_ready(str(media), pending, now=13.0, stable_seconds=2.0)
+
+    def test_gui_preset_converts_to_cli_watch_options(self):
+        watch_int = _extract_function('_watch_int')
+        watch_bool = _extract_function('_watch_bool')
+        convert = _extract_function(
+            '_watch_preset_to_cli_options',
+            extra_imports={
+                '_watch_int': watch_int,
+                '_watch_bool': watch_bool,
+                'MODELS': {'u2net_human_seg (People)': {}, 'BiRefNet-general (Best)': {}},
+                'OUTPUT_FORMATS': {'MP4': 'mp4', 'WebM': 'webm'},
+                'HARDWARE_OUTPUT_FORMATS': {'NVENC': 'mp4_nvenc'},
+                'NAMING_PATTERNS': ['{name}_alphacut', '{name}_{model}', '{name}_{format}'],
+            },
+        )
+
+        options = convert({
+            'model_index': 1,
+            'format_index': 1,
+            'naming_index': 2,
+            'edge_softness': 12,
+            'mask_shift': -3,
+            'temporal_smooth': 4,
+            'keep_audio': False,
+            'spill_strength': 22,
+            'spill_color_index': 2,
+            'bg_color': [0, 255, 0],
+            'fp16': 'yes',
+        })
+
+        assert options['model'] == 'BiRefNet-general (Best)'
+        assert options['format'] == 'webm'
+        assert options['output_pattern'] == '{name}_{format}'
+        assert options['edge'] == 12
+        assert options['shift'] == -3
+        assert options['temporal'] == 4
+        assert options['audio'] is False
+        assert options['spill'] == 22
+        assert options['spill_color'] == 'red'
+        assert options['bg_color'] == '0,255,0'
+        assert options['fp16'] is True
+
+    def test_watch_folder_parser_and_main_dispatch_are_wired(self):
+        source = _read_source()
+        parser_src = source.split('def build_parser():', 1)[1].split('\ndef main():', 1)[0]
+        main_src = source.split('def main():', 1)[1].split("\nif __name__ == '__main__':", 1)[0]
+        assert "'--watch-folder'" in parser_src
+        assert "'--watch-output'" in parser_src
+        assert "'--watch-preset'" in parser_src
+        assert "'--watch-once'" in parser_src
+        assert 'run_watch_folder(args)' in main_src
+        assert main_src.index('if args.watch_folder:') < main_src.index('if args.input and args.pipe:')
+
+    def test_dockerfiles_expose_watch_and_output_mounts(self):
+        root = os.path.dirname(os.path.dirname(__file__))
+        for filename in ('Dockerfile', 'Dockerfile.gpu'):
+            with open(os.path.join(root, filename), encoding='utf-8') as f:
+                source = f.read()
+            assert 'VOLUME ["/watch", "/output"]' in source
